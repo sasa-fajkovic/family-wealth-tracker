@@ -374,14 +374,16 @@ const categoryBreakdownGroups = computed(() => {
         <!-- Row 2: Scenario selector -->
         <div class="flex flex-col sm:flex-row sm:items-center gap-2">
           <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Scenario</span>
-          <SelectButton
-            v-model="scenario"
-            :options="SCENARIOS"
-            option-label="label"
-            option-value="value"
-            aria-label="Projection scenario"
-            class="wt-touch-select wt-soft-select"
-          />
+          <div class="wt-control-strip min-w-0 max-w-full" v-active-scroll>
+            <SelectButton
+              v-model="scenario"
+              :options="SCENARIOS"
+              option-label="label"
+              option-value="value"
+              aria-label="Projection scenario"
+              class="whitespace-nowrap wt-touch-select wt-soft-select"
+            />
+          </div>
           <span class="text-xs text-gray-400 dark:text-zinc-500 hidden sm:block">
             <template v-if="scenario === 'conservative'">0.5× stored growth rates</template>
             <template v-else-if="scenario === 'aggressive'">1.5× stored growth rates</template>

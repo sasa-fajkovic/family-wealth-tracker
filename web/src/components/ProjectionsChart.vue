@@ -101,48 +101,46 @@ const showTotal = computed(() => mergedSeries.value.length > 1)
 
 // Boundary plugin — draws a vertical dashed line with "Historical ←" / "→ Projected" labels
 // at the transition between historical and projected data.
-const boundaryPlugin = computed((): Plugin<'line' | 'bar'> => {
-  const histLen = props.data.historical.months.length
-  const dark = theme.value === 'dark'
-  const lineColor  = dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)'
-  const labelColor = dark ? 'rgba(161,161,170,0.85)' : 'rgba(107,114,128,0.85)'
+// vue-chartjs registers plugins once at chart creation, so read reactive state at draw time.
+const boundaryPlugin: Plugin<'line' | 'bar'> = {
+  id: 'projectionBoundary',
+  afterDraw(chart) {
+    const histLen = props.data.historical.months.length
+    const dark = theme.value === 'dark'
+    const lineColor  = dark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)'
+    const labelColor = dark ? 'rgba(161,161,170,0.85)' : 'rgba(107,114,128,0.85)'
+    if (histLen < 1 || props.data.projection.months.length < 1) return
+    const { ctx, chartArea, scales } = chart
+    const xScale = scales['x']
+    if (!xScale) return
+    // Draw the boundary between last historical bar and first projected bar
+    const leftPx  = xScale.getPixelForValue(histLen - 1)
+    const rightPx = xScale.getPixelForValue(histLen)
+    const midX = (leftPx + rightPx) / 2
 
-  return {
-    id: 'projectionBoundary',
-    afterDraw(chart) {
-      if (histLen < 1 || props.data.projection.months.length < 1) return
-      const { ctx, chartArea, scales } = chart
-      const xScale = scales['x']
-      if (!xScale) return
-      // Draw the boundary between last historical bar and first projected bar
-      const leftPx  = xScale.getPixelForValue(histLen - 1)
-      const rightPx = xScale.getPixelForValue(histLen)
-      const midX = (leftPx + rightPx) / 2
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(midX, chartArea.top)
+    ctx.lineTo(midX, chartArea.bottom)
+    ctx.strokeStyle = lineColor
+    ctx.lineWidth = 1.5
+    ctx.setLineDash([5, 4])
+    ctx.stroke()
+    ctx.restore()
 
-      ctx.save()
-      ctx.beginPath()
-      ctx.moveTo(midX, chartArea.top)
-      ctx.lineTo(midX, chartArea.bottom)
-      ctx.strokeStyle = lineColor
-      ctx.lineWidth = 1.5
-      ctx.setLineDash([5, 4])
-      ctx.stroke()
-      ctx.restore()
-
-      // Labels just below the top edge of the chart area
-      ctx.save()
-      ctx.font = '10px ui-sans-serif,system-ui,sans-serif'
-      ctx.fillStyle = labelColor
-      ctx.textBaseline = 'top'
-      const labelY = chartArea.top + 4
-      ctx.textAlign = 'right'
-      ctx.fillText('Historical', midX - 5, labelY)
-      ctx.textAlign = 'left'
-      ctx.fillText('Projected', midX + 5, labelY)
-      ctx.restore()
-    },
-  }
-})
+    // Labels just below the top edge of the chart area
+    ctx.save()
+    ctx.font = '10px ui-sans-serif,system-ui,sans-serif'
+    ctx.fillStyle = labelColor
+    ctx.textBaseline = 'top'
+    const labelY = chartArea.top + 4
+    ctx.textAlign = 'right'
+    ctx.fillText('Historical', midX - 5, labelY)
+    ctx.textAlign = 'left'
+    ctx.fillText('Projected', midX + 5, labelY)
+    ctx.restore()
+  },
+}
 
 // Bridge value: last historical value connects to first projected value visually.
 // The projected dataset starts one position back (at last hist index) with the bridge.
@@ -157,8 +155,19 @@ function buildNullPaddedDatasets(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const datasets: any[] = []
+  // Liabilities get their own stack so a paid-off (0) loan isn't stacked onto the assets, and each band
+  // fills to the previous band of the same sign instead of fill: 'stack' reaching across signs.
+  const prevFill: Record<string, number> = {}
+  const areaFill = (phase: string, negative: boolean) => {
+    if (!isArea) return false
+    const key = `${phase}-${negative}`
+    const target = prevFill[key] ?? 'origin'
+    prevFill[key] = datasets.length
+    return target
+  }
 
   for (const s of mergedSeries.value) {
+    const negative = [...s.histValues, ...s.projValues].reduce((a, v) => a + v, 0) < 0
     // Historical dataset: actual values then nulls
     const histPad = Array(projLen).fill(null)
     const histData = [...s.histValues, ...histPad]
@@ -202,11 +211,11 @@ function buildNullPaddedDatasets(
         data: histData,
         borderColor: s.color,
         backgroundColor: isArea ? s.color + '99' : s.color,
-        fill: isArea ? 'stack' : false,
+        fill: areaFill('historical', negative),
         tension: 0.1,
         pointRadius: 0,
         borderWidth: 2,
-        stack: isArea ? 'wealth-hist' : undefined,
+        stack: isArea ? `wealth-hist${negative ? '-neg' : ''}` : undefined,
         _projChart: true,
         _hideFromLegend: false,
         _categoryId: s.category_id,
@@ -217,12 +226,12 @@ function buildNullPaddedDatasets(
         data: projData,
         borderColor: s.color + 'aa',
         backgroundColor: isArea ? s.color + '44' : s.color,
-        fill: isArea ? 'stack' : false,
+        fill: areaFill('projected', negative),
         tension: 0.1,
         pointRadius: 0,
         borderWidth: 2,
         borderDash: [5, 5],
-        stack: isArea ? 'wealth-proj' : undefined,
+        stack: isArea ? `wealth-proj${negative ? '-neg' : ''}` : undefined,
         _projChart: true,
         _hideFromLegend: true,
         _categoryId: s.category_id,

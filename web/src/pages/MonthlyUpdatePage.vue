@@ -737,7 +737,7 @@ async function saveAll(): Promise<void> {
                 {{ formatValue(row.prevValue) }}
               </td>
               <td class="py-2 pr-3">
-                <div class="flex flex-col gap-1">
+                <div class="flex flex-col items-end gap-1">
                   <input
                     type="number"
                     :value="row.inputValue ?? ''"

@@ -284,13 +284,13 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
   <div class="min-h-screen bg-gray-50 dark:bg-zinc-950">
     <div class="px-4 sm:px-6 py-6">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
-        <div class="overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
+        <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
         <ChartTypeSelector :value="chartType" @change="setChartType" />
       </div>
 
-      <div v-if="persons.length > 0" class="overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
+      <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton v-model="personValue" :options="personOptions" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />
       </div>
 
@@ -309,7 +309,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
             ? 'lg:grid-cols-[minmax(20rem,36rem)_minmax(0,1fr)]'
             : 'sm:grid-cols-2 lg:max-w-xl'"
         >
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-2 gap-3 self-start">
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
               <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Total Income</p>
               <p class="text-base font-bold text-green-600 dark:text-green-400 tabular-nums sm:text-lg">{{ eurFmt.format(totalInflow) }}</p>
