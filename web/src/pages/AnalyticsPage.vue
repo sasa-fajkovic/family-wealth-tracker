@@ -33,8 +33,11 @@ import Skeleton from 'primevue/skeleton'
 import Message from 'primevue/message'
 import Button from 'primevue/button'
 import ChartCard from '../components/ui/ChartCard.vue'
+import PlannedToggle from '../components/ui/PlannedToggle.vue'
 import { useTheme } from '../composables/useTheme'
 import { useDataRefresh } from '../composables/useDataRefresh'
+import { useShowPlanned } from '../composables/useShowPlanned'
+import { plannedBarColor, plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
 import { getChartTokens, buildTooltipDefaults, wealthColors } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
 
@@ -135,6 +138,11 @@ const drilldownType = ref<DrilldownType>('asset')
 const selectedCategoryId = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
 const cashInflowData = ref<SummaryResponse | null>(null)
+const plannedData = ref<SummaryResponse | null>(null)
+const { showPlanned } = useShowPlanned()
+// Time-series charts read the planned (extended) summary when enabled; cards and breakdowns stay on today's.
+const timeline = computed(() => plannedData.value ?? data.value)
+const timelineToday = computed(() => (timeline.value ? todayIndex(timeline.value) : 0))
 const loading = ref(true)
 const error = ref<string | null>(null)
 const personsError = ref<string | null>(null)
@@ -164,12 +172,15 @@ async function loadData() {
   try {
     // Wealth summary drives all charts; cash-inflow summary feeds the Income drilldown
     // (the two endpoints partition the data — one returns asset+liability, the other cash-inflow).
-    const [wealth, cashInflow] = await Promise.all([
-      getSummary(range.value, person.value ?? undefined),
-      getSummary(range.value, person.value ?? undefined, true),
+    const personId = person.value ?? undefined
+    const [wealth, cashInflow, planned] = await Promise.all([
+      getSummary(range.value, personId),
+      getSummary(range.value, personId, true),
+      showPlanned.value ? getSummary(range.value, personId, false, true) : null,
     ])
     data.value = wealth
     cashInflowData.value = cashInflow
+    plannedData.value = planned
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
@@ -177,7 +188,7 @@ async function loadData() {
   }
 }
 
-watch([range, person, retryCount, referenceDataVersion, dataPointsVersion], loadData, { immediate: true })
+watch([range, person, showPlanned, retryCount, referenceDataVersion, dataPointsVersion], loadData, { immediate: true })
 watch(referenceDataVersion, loadPersons)
 
 const personOptions = computed(() => [
@@ -320,21 +331,22 @@ watch(drilldownType, () => {
 
 // ── Chart 1: Net Worth Trend (Line) ───────────────────────────────────────────
 const trendData = computed((): ChartData<'line'> => {
-  if (!data.value) return { labels: [], datasets: [] }
+  if (!timeline.value) return { labels: [], datasets: [] }
   const t = getChartTokens(theme.value === 'dark')
   return {
-    labels: data.value.months.map(m => m.slice(0, 7)),
+    labels: timeline.value.months.map(m => m.slice(0, 7)),
     datasets: [
       {
         label: 'Net Worth',
-        data: data.value.totals,
+        data: timeline.value.totals,
         borderColor: t.totalLine,
         backgroundColor: t.totalLine + '33',
         fill: true,
         tension: 0.2,
-        pointRadius: 3,
+        pointRadius: plannedPointRadius(timelineToday.value),
         pointHoverRadius: 5,
         borderWidth: 3,
+        segment: plannedSegment(timelineToday.value),
       },
     ],
   }
@@ -355,6 +367,7 @@ const trendOptions = computed((): ChartOptions<'line'> => {
         },
       },
       datalabels: { display: false },
+      plannedMarker: { index: timelineToday.value, dark: theme.value === 'dark' },
     },
     scales: {
       x: {
@@ -470,21 +483,21 @@ const hasLiabilitySeries = computed(() =>
 )
 
 const assetsVsLiabilitiesData = computed((): ChartData<'bar'> => {
-  if (!data.value) return { labels: [], datasets: [] }
-  const assetSeries = data.value.series.filter(s => s.category_type === 'asset')
-  const liabilitySeries = data.value.series.filter(s => s.category_type === 'liability')
-  const grossAssets = data.value.months.map((_, i) =>
+  if (!timeline.value) return { labels: [], datasets: [] }
+  const assetSeries = timeline.value.series.filter(s => s.category_type === 'asset')
+  const liabilitySeries = timeline.value.series.filter(s => s.category_type === 'liability')
+  const grossAssets = timeline.value.months.map((_, i) =>
     assetSeries.reduce((sum, s) => sum + s.values[i], 0)
   )
-  const totalLiabilities = data.value.months.map((_, i) =>
+  const totalLiabilities = timeline.value.months.map((_, i) =>
     liabilitySeries.reduce((sum, s) => sum + s.values[i], 0)
   )
   const datasets: ChartData<'bar'>['datasets'] = [
     {
       label: 'Gross Assets',
       data: grossAssets,
-      backgroundColor: wealthColors.assets.emerald + 'aa',
-      borderColor: wealthColors.assets.emerald,
+      backgroundColor: plannedBarColor(wealthColors.assets.emerald, timelineToday.value, 'aa'),
+      borderColor: plannedBarColor(wealthColors.assets.emerald, timelineToday.value, '', '66'),
       borderWidth: 1,
       stack: 'assets',
     },
@@ -493,13 +506,13 @@ const assetsVsLiabilitiesData = computed((): ChartData<'bar'> => {
     datasets.push({
       label: 'Liabilities',
       data: totalLiabilities,
-      backgroundColor: wealthColors.liabilities.rose + 'aa',
-      borderColor: wealthColors.liabilities.rose,
+      backgroundColor: plannedBarColor(wealthColors.liabilities.rose, timelineToday.value, 'aa'),
+      borderColor: plannedBarColor(wealthColors.liabilities.rose, timelineToday.value, '', '66'),
       borderWidth: 1,
       stack: 'liabilities',
     })
   }
-  return { labels: data.value.months.map(m => m.slice(0, 7)), datasets }
+  return { labels: timeline.value.months.map(m => m.slice(0, 7)), datasets }
 })
 
 const assetsLiabilitiesOptions = computed((): ChartOptions<'bar'> => {
@@ -519,6 +532,7 @@ const assetsLiabilitiesOptions = computed((): ChartOptions<'bar'> => {
         },
       },
       datalabels: { display: false },
+      plannedMarker: { index: timelineToday.value, dark: theme.value === 'dark' },
     },
     scales: {
       x: {
@@ -588,21 +602,21 @@ const hasCashInflowSeries = computed(() =>
 )
 
 const mixedData = computed((): { labels: string[]; datasets: MixedDataset[] } => {
-  if (!data.value) return { labels: [], datasets: [] }
+  if (!timeline.value) return { labels: [], datasets: [] }
   const t = getChartTokens(theme.value === 'dark')
-  const labels = data.value.months.map(m => m.slice(0, 7))
+  const labels = timeline.value.months.map(m => m.slice(0, 7))
 
-  const netWorth = data.value.totals
-  const cashInflowSeries = data.value.series.filter(s => s.category_type === 'cash-inflow')
-  const cashInflow = data.value.months.map((_, i) =>
+  const netWorth = timeline.value.totals
+  const cashInflowSeries = timeline.value.series.filter(s => s.category_type === 'cash-inflow')
+  const cashInflow = timeline.value.months.map((_, i) =>
     cashInflowSeries.reduce((sum, s) => sum + s.values[i], 0)
   )
 
   const overlayLabel = hasCashInflowSeries.value ? 'Income' : 'Gross Assets'
   const overlayData = hasCashInflowSeries.value
     ? cashInflow
-    : data.value.months.map((_, i) =>
-        data.value!.series.filter(s => s.category_type === 'asset').reduce((sum, s) => sum + s.values[i], 0)
+    : timeline.value.months.map((_, i) =>
+        timeline.value!.series.filter(s => s.category_type === 'asset').reduce((sum, s) => sum + s.values[i], 0)
       )
   const overlayColor = hasCashInflowSeries.value
     ? wealthColors.cashInflow.green
@@ -615,8 +629,8 @@ const mixedData = computed((): { labels: string[]; datasets: MixedDataset[] } =>
         type: 'bar' as const,
         label: 'Net Worth',
         data: netWorth,
-        backgroundColor: t.totalLine + '66',
-        borderColor: t.totalLine,
+        backgroundColor: plannedBarColor(t.totalLine, timelineToday.value, '66', '26'),
+        borderColor: plannedBarColor(t.totalLine, timelineToday.value, '', '55'),
         borderWidth: 1,
         order: 2,
       },
@@ -628,9 +642,10 @@ const mixedData = computed((): { labels: string[]; datasets: MixedDataset[] } =>
         backgroundColor: overlayColor + '22',
         fill: false,
         tension: 0.2,
-        pointRadius: 3,
+        pointRadius: plannedPointRadius(timelineToday.value),
         pointHoverRadius: 5,
         borderWidth: 3,
+        segment: plannedSegment(timelineToday.value),
         order: 1,
       },
     ] as MixedDataset[],
@@ -654,6 +669,7 @@ const mixedOptions = computed((): ChartOptions<'bar'> => {
         },
       },
       datalabels: { display: false },
+      plannedMarker: { index: timelineToday.value, dark: theme.value === 'dark' },
     },
     scales: {
       x: {
@@ -901,6 +917,7 @@ function signedEur(v: number) {
         <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" aria-label="Chart time range" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
+        <PlannedToggle class="self-start sm:self-auto sm:ml-auto" />
       </div>
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton v-model="personValue" :options="personOptions" option-label="label" option-value="value" aria-label="Filter by person" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />

@@ -94,6 +94,8 @@ export type RangeKey = 'ytd' | '6m' | '1y' | '2y' | '3y' | '5y' | '10y' | 'max'
 
 export interface SummaryResponse {
   months: string[]
+  /** Today's month; with `planned`, months/series/totals/asset_series run past it. */
+  current_month?: string
   series: {
     category_id: string
     category_name: string

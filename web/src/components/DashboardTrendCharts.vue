@@ -22,6 +22,7 @@ import { useTheme } from '../composables/useTheme'
 import ChartCard from './ui/ChartCard.vue'
 import { buildTooltipDefaults, getChartTokens, wealthColors } from '../theme/tokens'
 import { compactFmt, eurFmt } from '../utils/formatters'
+import { plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Filler, Tooltip, Legend)
 
@@ -63,6 +64,8 @@ function makeClickHandler(kind: CardKind, labelsRef: () => string[]) {
 const { theme } = useTheme()
 
 const labels = computed(() => props.data.months.map(month => month.slice(0, 7)))
+const wealthToday = computed(() => todayIndex(props.data))
+const inflowToday = computed(() => todayIndex(props.cashInflowData))
 
 function valuesForType(summary: SummaryResponse, type: TrendType): number[] {
   return summary.months.map((_, index) =>
@@ -72,11 +75,11 @@ function valuesForType(summary: SummaryResponse, type: TrendType): number[] {
   )
 }
 
-function latestValue(values: number[]): number {
-  return values.length > 0 ? values[values.length - 1] : 0
+function valueAt(values: number[], index: number): number {
+  return values[index] ?? 0
 }
 
-function trendChartData(label: string, chartLabels: string[], values: number[], color: string): ChartData<'line'> {
+function trendChartData(label: string, chartLabels: string[], values: number[], color: string, today: number): ChartData<'line'> {
   return {
     labels: chartLabels,
     datasets: [{
@@ -89,6 +92,7 @@ function trendChartData(label: string, chartLabels: string[], values: number[], 
       pointRadius: 0,
       pointHoverRadius: 4,
       borderWidth: 3,
+      segment: plannedSegment(today),
     }],
   }
 }
@@ -108,9 +112,10 @@ const netWorthData = computed((): ChartData<'line'> => {
       backgroundColor: tokens.totalLine + '33',
       fill: true,
       tension: 0.2,
-      pointRadius: 3,
+      pointRadius: plannedPointRadius(wealthToday.value),
       pointHoverRadius: 5,
       borderWidth: 3,
+      segment: plannedSegment(wealthToday.value),
     }],
   }
 })
@@ -120,9 +125,9 @@ const cards = computed(() => [
     title: 'Assets Trend',
     subtitle: 'Total asset value over time',
     valueClass: 'text-emerald-600 dark:text-emerald-400',
-    currentValue: latestValue(assetValues.value),
+    currentValue: valueAt(assetValues.value, wealthToday.value),
     hasData: assetValues.value.length > 0,
-    data: trendChartData('Assets', labels.value, assetValues.value, wealthColors.assets.emerald),
+    data: trendChartData('Assets', labels.value, assetValues.value, wealthColors.assets.emerald, wealthToday.value),
     kind: 'assets' as CardKind,
     labelsRef: () => labels.value,
   },
@@ -130,9 +135,9 @@ const cards = computed(() => [
     title: 'Liabilities Trend',
     subtitle: 'Total debt balance over time',
     valueClass: 'text-red-600 dark:text-red-400',
-    currentValue: latestValue(liabilityValues.value),
+    currentValue: valueAt(liabilityValues.value, wealthToday.value),
     hasData: liabilityValues.value.length > 0,
-    data: trendChartData('Liabilities', labels.value, liabilityValues.value, wealthColors.liabilities.rose),
+    data: trendChartData('Liabilities', labels.value, liabilityValues.value, wealthColors.liabilities.rose, wealthToday.value),
     kind: 'liabilities' as CardKind,
     labelsRef: () => labels.value,
   },
@@ -140,16 +145,17 @@ const cards = computed(() => [
     title: 'Income Trend',
     subtitle: 'Income over time',
     valueClass: 'text-teal-600 dark:text-teal-400',
-    currentValue: latestValue(cashInflowValues.value),
+    currentValue: valueAt(cashInflowValues.value, inflowToday.value),
     hasData: cashInflowValues.value.length > 0,
-    data: trendChartData('Income', cashInflowLabels.value, cashInflowValues.value, wealthColors.cashInflow.teal),
+    data: trendChartData('Income', cashInflowLabels.value, cashInflowValues.value, wealthColors.cashInflow.teal, inflowToday.value),
     kind: 'income' as CardKind,
     labelsRef: () => cashInflowLabels.value,
   },
 ])
 
 function buildChartOptions(kind: CardKind, labelsRef: () => string[]): ChartOptions<'line'> {
-  const tokens = getChartTokens(theme.value === 'dark')
+  const dark = theme.value === 'dark'
+  const tokens = getChartTokens(dark)
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -165,6 +171,7 @@ function buildChartOptions(kind: CardKind, labelsRef: () => string[]): ChartOpti
         },
       },
       datalabels: { display: false },
+      plannedMarker: { index: kind === 'income' ? inflowToday.value : wealthToday.value, dark },
     },
     scales: {
       x: {
