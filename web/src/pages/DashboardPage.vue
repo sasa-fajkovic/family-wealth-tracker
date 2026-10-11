@@ -6,11 +6,13 @@ import { getSummary, getPersons, getAssets, getCategories, ApiError } from '../a
 import type { SummaryResponse, RangeKey, Person, Asset, Category } from '../types/index'
 import DashboardTrendCharts from '../components/DashboardTrendCharts.vue'
 import PageShell from '../components/ui/PageShell.vue'
+import PlannedToggle from '../components/ui/PlannedToggle.vue'
 import SelectButton from 'primevue/selectbutton'
 import Skeleton from 'primevue/skeleton'
 import Message from 'primevue/message'
 import Button from 'primevue/button'
 import { useDataRefresh } from '../composables/useDataRefresh'
+import { useShowPlanned } from '../composables/useShowPlanned'
 
 const RANGES: { label: string; value: RangeKey }[] = [
   { label: 'YTD', value: 'ytd' }, { label: '6M',  value: '6m'  },
@@ -26,6 +28,9 @@ const categories = ref<Category[]>([])
 const person = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
 const cashInflowData = ref<SummaryResponse | null>(null)
+const plannedData = ref<SummaryResponse | null>(null)
+const plannedCashInflowData = ref<SummaryResponse | null>(null)
+const { showPlanned } = useShowPlanned()
 const loading = ref(true)
 const error = ref<string | null>(null)
 const retryCount = ref(0)
@@ -64,12 +69,17 @@ async function loadSummary() {
   loading.value = true
   error.value = null
   try {
-    const [result, inflowResult] = await Promise.all([
-      getSummary(range.value, person.value ?? undefined),
-      getSummary(range.value, person.value ?? undefined, true),
+    const personId = person.value ?? undefined
+    const [result, inflowResult, plannedResult, plannedInflowResult] = await Promise.all([
+      getSummary(range.value, personId),
+      getSummary(range.value, personId, true),
+      showPlanned.value ? getSummary(range.value, personId, false, true) : null,
+      showPlanned.value ? getSummary(range.value, personId, true, true) : null,
     ])
     data.value = result
     cashInflowData.value = inflowResult
+    plannedData.value = plannedResult
+    plannedCashInflowData.value = plannedInflowResult
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
@@ -77,7 +87,7 @@ async function loadSummary() {
   }
 }
 
-watch([range, person, retryCount, referenceDataVersion, dataPointsVersion], loadSummary, { immediate: true })
+watch([range, person, showPlanned, retryCount, referenceDataVersion, dataPointsVersion], loadSummary, { immediate: true })
 watch(referenceDataVersion, loadReferenceData)
 
 const personOptions = computed(() => [
@@ -137,6 +147,7 @@ function formatSignedEur(v: number) {
             class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select"
           />
         </div>
+        <PlannedToggle class="self-start sm:self-auto" />
       </div>
 
       <!-- Person filter -->
@@ -237,7 +248,11 @@ function formatSignedEur(v: number) {
 
       <!-- Dashboard trends -->
       <template v-else-if="data && cashInflowData">
-        <DashboardTrendCharts :data="data" :cash-inflow-data="cashInflowData" @point-click="onTrendChartClick" />
+        <DashboardTrendCharts
+          :data="plannedData ?? data"
+          :cash-inflow-data="plannedCashInflowData ?? cashInflowData"
+          @point-click="onTrendChartClick"
+        />
       </template>
   </PageShell>
 </template>

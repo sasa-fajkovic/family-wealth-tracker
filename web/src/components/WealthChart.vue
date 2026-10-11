@@ -26,6 +26,7 @@ import type { ChartType } from '../composables/useChartType'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
+import { plannedBarColor, plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
 
 ChartJS.register(
   CategoryScale,
@@ -59,6 +60,7 @@ const visibleSeries = computed(() =>
 )
 
 const labels = computed(() => props.data.months.map(m => m.slice(0, 7)))
+const today = computed(() => todayIndex(props.data))
 
 const showTotal = computed(() => visibleSeries.value.length > 1)
 const displayedTotals = computed(() =>
@@ -117,9 +119,10 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
         backgroundColor: color + '22',
         fill: true,
         tension: 0.2,
-        pointRadius: 3,
+        pointRadius: plannedPointRadius(today.value),
         pointHoverRadius: 5,
         borderWidth: 3,
+        segment: plannedSegment(today.value),
       }],
     } as ChartData<'line'>
   }
@@ -130,8 +133,8 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       datasets: series.map(s => ({
         label: s.category_name,
         data: s.values,
-        backgroundColor: s.color + 'cc',
-        borderColor: s.color,
+        backgroundColor: plannedBarColor(s.color, today.value),
+        borderColor: plannedBarColor(s.color, today.value, '', '88'),
         borderWidth: 1,
         // Separate stacks so liabilities go below zero and assets stack above
         stack: s.category_type === 'liability' ? 'liabilities' : 'assets',
@@ -150,6 +153,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
     borderWidth: 2,
     // Liabilities: dashed line for visual distinction
     borderDash: s.category_type === 'liability' ? [5, 4] : undefined,
+    segment: s.category_type === 'liability' ? undefined : plannedSegment(today.value),
     stack: isArea ? (s.category_type === 'liability' ? 'liabilities' : 'assets') : undefined,
     order: 1,
   }))
@@ -165,6 +169,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       tension: 0.1,
       pointRadius: 0,
       borderWidth: 3,
+      segment: plannedSegment(today.value),
       stack: undefined,
       order: 0,
     })
@@ -175,8 +180,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
 
 const pieData = computed((): ChartData<'pie'> => {
   const series = visibleSeries.value
-  const lastIdx = props.data.months.length - 1
-  const values = series.map(s => Math.max(0, s.values[lastIdx] ?? 0))
+  const values = series.map(s => Math.max(0, s.values[today.value] ?? 0))
   return {
     labels: series.map(s => s.category_name),
     datasets: [{
@@ -191,7 +195,7 @@ const pieData = computed((): ChartData<'pie'> => {
 const pieOptions = computed((): ChartOptions<'pie'> => {
   const dark = theme.value === 'dark'
   const t = getChartTokens(dark)
-  const lastMonthIndex = Math.max(0, props.data.months.length - 1)
+  const lastMonthIndex = Math.max(0, today.value)
   return {
     responsive: true,
     maintainAspectRatio: false,
@@ -331,6 +335,7 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
         },
       },
       datalabels: { display: false },
+      plannedMarker: { index: today.value, dark },
     },
     datasets: {
       line: {
@@ -341,7 +346,7 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
       x: {
         grid: { color: t.grid },
         border: { display: false },
-        ticks: { color: t.tick, font: { size: 12 } },
+        ticks: { color: t.tick, font: { size: 12 }, maxTicksLimit: 12 },
       },
       y: {
         stacked: isBar || isArea,

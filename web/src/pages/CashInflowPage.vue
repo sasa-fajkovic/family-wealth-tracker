@@ -5,6 +5,7 @@ import { getSummary, getPersons, getAssets, ApiError } from '../api/client'
 import type { SummaryResponse, RangeKey, Person, Asset } from '../types/index'
 import ChartTypeSelector from '../components/ChartTypeSelector.vue'
 import ChartCard from '../components/ui/ChartCard.vue'
+import PlannedToggle from '../components/ui/PlannedToggle.vue'
 import WealthChart from '../components/WealthChart.vue'
 import SelectButton from 'primevue/selectbutton'
 import Skeleton from 'primevue/skeleton'
@@ -12,6 +13,7 @@ import Message from 'primevue/message'
 import Button from 'primevue/button'
 import { useChartType } from '../composables/useChartType'
 import { useDataRefresh } from '../composables/useDataRefresh'
+import { useShowPlanned } from '../composables/useShowPlanned'
 
 const RANGES: { label: string; value: RangeKey }[] = [
   { label: 'YTD', value: 'ytd' }, { label: '6M',  value: '6m'  },
@@ -25,6 +27,8 @@ const persons = ref<Person[]>([])
 const assets = ref<Asset[]>([])
 const person = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
+const plannedData = ref<SummaryResponse | null>(null)
+const { showPlanned } = useShowPlanned()
 const disabledSourceIds = ref<Set<string>>(new Set())
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -64,7 +68,13 @@ async function loadSummary() {
   loading.value = true
   error.value = null
   try {
-    data.value = await getSummary(range.value, person.value ?? undefined, true)
+    const personId = person.value ?? undefined
+    const [result, planned] = await Promise.all([
+      getSummary(range.value, personId, true),
+      showPlanned.value ? getSummary(range.value, personId, true, true) : null,
+    ])
+    data.value = result
+    plannedData.value = planned
   } catch (err) {
     error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
@@ -72,7 +82,7 @@ async function loadSummary() {
   }
 }
 
-watch([range, person, retryCount, referenceDataVersion, dataPointsVersion], loadSummary, { immediate: true })
+watch([range, person, showPlanned, retryCount, referenceDataVersion, dataPointsVersion], loadSummary, { immediate: true })
 watch(person, () => { disabledSourceIds.value = new Set() })
 watch(referenceDataVersion, () => {
   loadPersons()
@@ -179,8 +189,8 @@ function personName(id: string): string {
   return personNameById.value.get(id) ?? id
 }
 
-const displayData = computed<SummaryResponse | null>(() => {
-  if (!data.value) return null
+function buildDisplayData(source: SummaryResponse | null): SummaryResponse | null {
+  if (!source) return null
 
   const groupByPerson = person.value === null
   const groups = new Map<string, {
@@ -190,7 +200,7 @@ const displayData = computed<SummaryResponse | null>(() => {
     values: number[]
   }>()
 
-  data.value.asset_series.forEach((series, index) => {
+  source.asset_series.forEach((series, index) => {
     // When viewing a single person, allow excluding individual sources via toggle
     if (!groupByPerson && disabledSourceIds.value.has(series.asset_id)) return
     const id = groupByPerson ? series.person_id : series.asset_id
@@ -220,7 +230,7 @@ const displayData = computed<SummaryResponse | null>(() => {
     }))
 
   // Recompute totals timeline + grand total based on the (possibly filtered) series
-  const monthCount = data.value.months.length
+  const monthCount = source.months.length
   const totals = Array.from({ length: monthCount }, (_, i) =>
     series.reduce((sum, s) => sum + (s.values[i] ?? 0), 0)
   )
@@ -239,19 +249,23 @@ const displayData = computed<SummaryResponse | null>(() => {
   })
 
   return {
-    ...data.value,
+    ...source,
     series,
     totals,
     current_total: currentTotal,
     category_breakdown,
   }
-})
+}
+
+const displayData = computed(() => buildDisplayData(data.value))
+// The chart may run past today into planned months; the summary cards always use displayData.
+const chartDisplayData = computed(() => (plannedData.value ? buildDisplayData(plannedData.value) : displayData.value))
 
 const assetCategoryById = computed(() => new Map(assets.value.map(a => [a.id, a.category_id])))
 
 function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; datasetLabel: string }) {
-  if (!data.value || !displayData.value) return
-  const months = displayData.value.months
+  if (!data.value || !chartDisplayData.value) return
+  const months = chartDisplayData.value.months
   const monthRaw = months[payload.monthIndex]
   if (!monthRaw) return
   const month = monthRaw.slice(0, 7)
@@ -259,7 +273,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
 
   // Trend chart shows total only — no per-series filter (but carry active person)
   const isTotal = chartType.value === 'trend' || payload.datasetLabel === 'Total'
-  const series = displayData.value.series[payload.datasetIndex]
+  const series = chartDisplayData.value.series[payload.datasetIndex]
   if (isTotal) {
     if (person.value !== null) query.person = person.value
   } else if (series) {
@@ -287,7 +301,10 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
         <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
-        <ChartTypeSelector :value="chartType" @change="setChartType" />
+        <div class="flex flex-wrap items-center gap-2">
+          <PlannedToggle />
+          <ChartTypeSelector :value="chartType" @change="setChartType" />
+        </div>
       </div>
 
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
@@ -389,8 +406,8 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
         </div>
       </div>
 
-      <ChartCard v-else-if="displayData" :title="chartTitle" :subtitle="chartSubtitle">
-        <WealthChart :data="displayData" :chart-type="chartType" @point-click="onChartPointClick" />
+      <ChartCard v-else-if="chartDisplayData" :title="chartTitle" :subtitle="chartSubtitle">
+        <WealthChart :data="chartDisplayData" :chart-type="chartType" @point-click="onChartPointClick" />
       </ChartCard>
     </div>
   </div>

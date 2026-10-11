@@ -243,6 +243,28 @@ describe('GET /api/v1/summary', () => {
     const res = await get('/api/v1/summary?range=forever')
     assert.equal(res.status, 400)
   })
+
+  test('planned=true extends timelines to the last planned month; headline stays at today', async () => {
+    const created = await json('/api/v1/data-points', 'POST', { asset_id: 'vanguard-vti', year_month: '2099-03', value: 5000 })
+    assert.equal(created.status, 201)
+    const { id } = await created.json() as { id: string }
+    try {
+      type Body = { months: string[]; totals: number[]; current_month: string; current_total: number; asset_series: { values: number[] }[] }
+      const today = await (await get('/api/v1/summary?range=1y')).json() as Body
+      const planned = await (await get('/api/v1/summary?range=1y&planned=true')).json() as Body
+      assert.equal(today.months.at(-1), today.current_month)
+      assert.equal(planned.current_month, today.current_month)
+      assert.equal(planned.months[0], today.months[0])
+      assert.equal(planned.months.at(-1), '2099-03')
+      assert.equal(planned.totals.length, planned.months.length)
+      assert.equal(planned.asset_series[0].values.length, planned.months.length)
+      assert.equal(planned.totals.at(-1), 5000)
+      assert.equal(planned.totals[planned.months.indexOf(today.current_month)], today.totals.at(-1))
+      assert.equal(planned.current_total, today.current_total)
+    } finally {
+      assert.equal((await json(`/api/v1/data-points/${id}`, 'DELETE', {})).status, 200)
+    }
+  })
 })
 
 // ── Projections ─────────────────────────────────────────────────────────────

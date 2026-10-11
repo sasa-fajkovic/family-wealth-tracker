@@ -17,10 +17,11 @@ const querySchema = z.object({
   range: z.enum(rangeValues).default('1y'),
   person: z.string().optional(),
   tracking: z.string().optional(),  // 'true' = cash-inflow view (cash-inflow categories only)
+  planned: z.string().optional(),   // 'true' = extend timelines past today to the last planned data point
 })
 
 router.get('/', zValidator('query', querySchema, hook), async (c) => {
-  const { range, person, tracking } = c.req.valid('query')
+  const { range, person, tracking, planned } = c.req.valid('query')
   const trackingMode = tracking === 'true'
   const { db, dataPoints } = await readDbAndDataPoints()
 
@@ -44,8 +45,16 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   const months = monthRange(startYM, endYM)
   const fillMode = trackingMode ? 'flow' : 'stock'
   const locfData = locfFill(months, dataPoints, filteredAssets, fillMode)
+  const response = { ...aggregateSummary(filteredAssets, relevantCategories, locfData, months, fillMode), current_month: endYM }
 
-  return c.json(aggregateSummary(filteredAssets, relevantCategories, locfData, months, fillMode))
+  if (planned === 'true' && latestMonth > endYM) {
+    // Headline numbers and breakdowns stay as of today; only the timelines extend into planned months.
+    const plannedMonths = monthRange(startYM, latestMonth)
+    const ext = aggregateSummary(filteredAssets, relevantCategories, locfFill(plannedMonths, dataPoints, filteredAssets, fillMode), plannedMonths, fillMode)
+    Object.assign(response, { months: ext.months, series: ext.series, totals: ext.totals, asset_series: ext.asset_series })
+  }
+
+  return c.json(response)
 })
 
 export default router

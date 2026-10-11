@@ -169,10 +169,11 @@ export function deleteDataPoint(id: string): Promise<void> {
 
 // ── Summary ────────────────────────────────────────────────────────────────────
 
-export function getSummary(range: RangeKey, person?: string, tracking?: boolean): Promise<SummaryResponse> {
+export function getSummary(range: RangeKey, person?: string, tracking?: boolean, planned?: boolean): Promise<SummaryResponse> {
   const params = new URLSearchParams({ range })
   if (person) params.set('person', person)
   if (tracking) params.set('tracking', 'true')
+  if (planned) params.set('planned', 'true')
   return apiFetch(`/summary?${params.toString()}`)
 }
 
