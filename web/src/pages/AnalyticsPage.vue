@@ -576,7 +576,7 @@ const polarOptions = computed((): ChartOptions<'polarArea'> => {
     scales: {
       r: {
         grid: { color: t.grid },
-        ticks: { color: t.tick, font: { size: 10 }, backdropColor: 'transparent', callback: (v) => compactFmt.format(v as number) },
+        ticks: { display: false },
       },
     },
   }
@@ -898,11 +898,11 @@ function signedEur(v: number) {
     <div class="px-4 sm:px-6 py-6">
       <!-- Controls -->
       <div class="flex flex-col sm:flex-row sm:items-center gap-2 mb-3">
-        <div class="overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
+        <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" aria-label="Chart time range" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
       </div>
-      <div v-if="persons.length > 0" class="overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
+      <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton v-model="personValue" :options="personOptions" option-label="label" option-value="value" aria-label="Filter by person" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />
       </div>
 
@@ -1029,7 +1029,7 @@ function signedEur(v: number) {
           </ChartCard>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm min-w-0">
             <div class="mb-3">
-              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div class="flex flex-col gap-3">
                 <div>
                   <h2 class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">
                     Drilldown
@@ -1038,14 +1038,16 @@ function signedEur(v: number) {
                     Pick a category to see the individual {{ drilldownTypeLabel(drilldownType) }} behind it.
                   </p>
                 </div>
-                <SelectButton
-                  v-model="drilldownType"
-                  :options="drilldownTypeOptions"
-                  option-label="label"
-                  option-value="value"
-                  aria-label="Drilldown type"
-                  class="wt-touch-select wt-soft-select whitespace-nowrap"
-                />
+                <div class="wt-control-strip max-w-full" v-active-scroll>
+                  <SelectButton
+                    v-model="drilldownType"
+                    :options="drilldownTypeOptions"
+                    option-label="label"
+                    option-value="value"
+                    aria-label="Drilldown type"
+                    class="wt-touch-select wt-soft-select whitespace-nowrap"
+                  />
+                </div>
               </div>
             </div>
 

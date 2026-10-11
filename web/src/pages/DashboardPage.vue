@@ -186,7 +186,7 @@ function formatSignedEur(v: number) {
 
       <!-- Metric cards row -->
       <template v-if="data && cashInflowData && !loading">
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" :class="hasLiabilities ? 'lg:grid-cols-5' : 'lg:grid-cols-4'">
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-2">Tracked Items</p>
             <div class="space-y-1 text-sm">
