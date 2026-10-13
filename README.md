@@ -188,6 +188,8 @@ assets:
 - A single global mutex (`server/src/storage/mutex.ts`) serialises all
   reads and writes — concurrent requests are safe.
 - Projection growth uses `(1+r)^(1/12) - 1` (compound monthly), not `r/12`.
+- Projections start at the current month. Future-dated data points (planned
+  values) replace the grown value in their month; growth resumes from them.
 - `asset.projected_yearly_growth !== null` overrides the category default.
   `0` is a valid override; do not check with truthiness.
 

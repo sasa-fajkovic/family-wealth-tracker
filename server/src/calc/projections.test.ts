@@ -254,3 +254,46 @@ describe('buildProjection floors values at 0', () => {
     }
   })
 })
+
+describe('buildProjection planned values', () => {
+  test('anchor ignores data points after asOf', () => {
+    const cat = makeCategory('cat1', 0)
+    const asset = makeAsset('a1', 'cat1')
+    const proj = buildProjection([asset], [cat], [makeDP('a1', '2024-06', 100), makeDP('a1', '2030-01', 500)], 1, 1.0, '2024-06')
+    assert.equal(proj.months[0], '2024-07')
+  })
+
+  test('interpolates from seed to planned value, then grows from the last planned value', () => {
+    const cat = makeCategory('cat1', 0.12)
+    const asset = makeAsset('a1', 'cat1')
+    const proj = buildProjection([asset], [cat], [makeDP('a1', '2024-06', 1000), makeDP('a1', '2024-09', 4000)], 1, 1.0, '2024-06')
+    const v = proj.series[0].values
+    assert.equal(v[0], 2000)
+    assert.equal(v[1], 3000)
+    assert.equal(v[2], 4000)
+    assert.ok(Math.abs(v[3] - 4000 * (1 + compoundMonthlyRate(0.12))) < 0.001)
+  })
+
+  test('asset with only future data points is 0 until its first planned month', () => {
+    const cat: Category = { id: 'loan', name: 'loan', projected_yearly_growth: -0.04, color: '#ff0000', type: 'liability' }
+    const now = makeAsset('now', 'loan')
+    const later = makeAsset('later', 'loan')
+    const proj = buildProjection([now, later], [cat],
+      [makeDP('now', '2024-06', -100), makeDP('later', '2024-08', -90000), makeDP('later', '2024-09', -89000)], 1, 1.0, '2024-06')
+    const v = proj.series[0].values
+    assert.ok(v[0] > -100 && v[0] < -99)
+    assert.ok(v[1] < -90000 && v[1] > -90100)
+    assert.ok(v[2] < -89000 && v[2] > -89100)
+  })
+
+  test('latest updated_at wins among planned values in the same month', () => {
+    const cat = makeCategory('cat1', 0)
+    const asset = makeAsset('a1', 'cat1')
+    const proj = buildProjection([asset], [cat], [
+      makeDP('a1', '2024-06', 1),
+      makeDP('a1', '2024-07', 2, '2024-01-01T00:00:00.000Z'),
+      makeDP('a1', '2024-07', 3, '2024-02-01T00:00:00.000Z'),
+    ], 1, 1.0, '2024-06')
+    assert.equal(proj.series[0].values[0], 3)
+  })
+})

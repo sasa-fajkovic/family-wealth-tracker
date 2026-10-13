@@ -676,7 +676,7 @@ const categoryBreakdownGroups = computed(() => {
                     </div>
                   </div>
                   <p class="mt-1.5 text-xs text-gray-400 dark:text-zinc-500">
-                    From latest data month {{ projectionAnchorYM }} · solid = historical · dashed = projected
+                    From latest data month {{ projectionAnchorYM }} · solid = historical · dashed = projected · planned values override growth
                   </p>
                 </div>
               </div>
