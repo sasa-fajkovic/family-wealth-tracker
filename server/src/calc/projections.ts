@@ -77,8 +77,8 @@ export interface ProjectionBlock {
 /**
  * Build a compound-growth projection for years * 12 months.
  *
- * PROJ-04: Projection starts the month AFTER the latest data point across all assets.
- *          When no data points exist, starts the month after the current calendar month.
+ * PROJ-04: Projection starts the month AFTER the latest data point up to `asOf`.
+ *          When no such data points exist, starts the month after the current calendar month.
  *
  * PROJ-02: Monthly rate = compoundMonthlyRate(annualRate) — NEVER annualRate/12.
  * PROJ-03: Growth rate per asset via resolveGrowthRate (asset override or category default).
@@ -88,6 +88,10 @@ export interface ProjectionBlock {
  *   2. Among data points with that year_month, pick the one with the greatest updated_at
  *      (ISO 8601 strings compare correctly — same upsert rule as locfFill).
  *   3. If the asset has no data points, seed = 0.
+ *
+ * Planned values (data points after the anchor) are used as-is. Months between two known
+ * values (seed or planned) are interpolated linearly; growth applies only after the last one.
+ * Assets that only have planned values stay 0 until their first planned month.
  *
  * @param rateMultiplier  Scenario multiplier applied to every resolved growth rate.
  *   1.0 = base (default, preserves current behaviour).
@@ -101,13 +105,15 @@ export function buildProjection(
   dataPoints: DataPoint[],
   years: number,
   rateMultiplier = 1.0,
+  asOf = currentMonthKey(),
 ): ProjectionBlock {
-  // 1. Determine projection anchor: greatest year_month across ALL data points
-  const latestMonth = dataPoints.length === 0
-    ? currentMonthKey()
-    : dataPoints.reduce(
+  // 1. Determine projection anchor: greatest year_month up to asOf
+  const pastPoints = dataPoints.filter(dp => dp.year_month <= asOf)
+  const latestMonth = pastPoints.length === 0
+    ? asOf
+    : pastPoints.reduce(
         (best, dp) => (dp.year_month > best ? dp.year_month : best),
-        dataPoints[0].year_month
+        pastPoints[0].year_month
       )
 
   // 2. Build months array: years*12 months starting one month after latestMonth
@@ -129,7 +135,13 @@ export function buildProjection(
 
     for (const asset of catAssets) {
       // Find this asset's projection seed
-      const assetDPs = dataPoints.filter(dp => dp.asset_id === asset.id)
+      const assetDPs = dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth)
+      const planned = new Map<string, DataPoint>()
+      for (const dp of dataPoints) {
+        if (dp.asset_id !== asset.id || dp.year_month <= latestMonth) continue
+        const prev = planned.get(dp.year_month)
+        if (!prev || dp.updated_at > prev.updated_at) planned.set(dp.year_month, dp)
+      }
       let seed = 0
       if (assetDPs.length > 0) {
         const latestYM = assetDPs.reduce(
@@ -154,9 +166,22 @@ export function buildProjection(
         : cat.type === 'asset'
           ? (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
           : (x: number) => (Number.isFinite(x) ? x : 0)
+      const plannedValues = months.map(m => planned.get(m)?.value)
+      const nextPlanned = (from: number) => plannedValues.findIndex((x, j) => j >= from && x !== undefined)
       let v = seed
+      let prevI = assetDPs.length > 0 ? -1 : null
+      let prevV = seed
+      let nextI = nextPlanned(0)
       for (let i = 0; i < months.length; i++) {
-        v = clamp(v * (1 + monthlyRate))
+        if (i === nextI) {
+          v = prevV = plannedValues[i]!
+          prevI = i
+          nextI = nextPlanned(i + 1)
+        } else if (nextI !== -1 && prevI !== null) {
+          v = prevV + (plannedValues[nextI]! - prevV) * (i - prevI) / (nextI - prevI)
+        } else {
+          v = clamp(v * (1 + monthlyRate))
+        }
         values[i] += v   // accumulate: multiple assets in same category sum together
       }
     }

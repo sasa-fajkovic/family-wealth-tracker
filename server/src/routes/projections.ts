@@ -45,10 +45,8 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   const locfData = locfFill(histMonths, wealthDataPoints, wealthAssets)
   const historical = aggregateSummary(wealthAssets, wealthCategories, locfData, histMonths)
 
-  // Projection seed: ignore future-dated data points so projection starts at "now",
-  // not at the latest future entry the user may have pre-loaded.
-  const seedPoints = wealthDataPoints.filter(dp => dp.year_month <= currentMonth)
-  const projection = buildProjection(wealthAssets, wealthCategories, seedPoints, years, rateMultiplier)
+  // Projection starts at "now"; future-dated (planned) data points override growth in their months.
+  const projection = buildProjection(wealthAssets, wealthCategories, wealthDataPoints, years, rateMultiplier, currentMonth)
 
   // PROJ-05: combined response with both keys
   return c.json({ historical, projection })
