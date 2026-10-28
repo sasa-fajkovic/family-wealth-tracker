@@ -108,6 +108,9 @@ export interface SummaryResponse {
   monthly_delta_abs: number
   period_delta_abs: number
   period_delta_pct: number
+  period_start_month: string | null
+  period_delta_available: boolean
+  period_delta_pct_available: boolean
   category_breakdown: {
     category_id: string
     category_name: string
@@ -142,6 +145,10 @@ export interface SummaryResponse {
     pct_of_total: number
     monthly_delta_abs: number
     period_delta_abs: number
+    period_delta_pct: number
+    period_start_month: string | null
+    period_delta_available: boolean
+    period_delta_pct_available: boolean
     observation_month: string | null
     observation_status: 'observed' | 'carried' | 'missing'
   }[]

@@ -16,7 +16,7 @@ const containerClass = computed(() => {
   if (expanded.value) {
     return 'fixed inset-0 z-[1000] bg-white dark:bg-zinc-900 flex flex-col p-4 sm:p-6 overflow-auto'
   }
-  return 'rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 sm:p-4'
+  return 'min-w-0 rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 sm:p-4'
 })
 
 const bodyWrapperClass = computed(() => {

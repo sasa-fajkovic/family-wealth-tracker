@@ -79,6 +79,8 @@ test.describe('Data Points page', () => {
     await expect(page.getByRole('heading', { name: 'History / Corrections' })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Add Data Point' })).toHaveCount(0)
 
+    await page.getByRole('combobox', { name: 'Filter by person' }).click()
+    await page.getByRole('option', { name: person.name, exact: true }).click()
     await expect(rowContaining(page, asset.name)).toBeVisible()
     await expect(rowContaining(page, '12.345,00')).toBeVisible()
   })
@@ -157,6 +159,8 @@ test.describe('Admin page', () => {
     })
 
     await page.goto('/data-points')
+    await page.getByRole('combobox', { name: 'Filter by person' }).click()
+    await page.getByRole('option', { name: person.name, exact: true }).click()
     await expect(rowContaining(page, asset.name)).toBeVisible()
     await expect(rowContaining(page, '-1.000,00')).toBeVisible()
   })

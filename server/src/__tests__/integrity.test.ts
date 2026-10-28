@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { stringify, parse } from 'yaml'
+import type { SummaryResponse } from '../calc/summary.js'
 import type { Database, DataPoint } from '../models/index.js'
 
 const root = await mkdtemp(join(tmpdir(), 'wt-integrity-'))
@@ -428,3 +429,69 @@ for (const [type, track_only, expected] of [
     assert.deepEqual(await bytes(), before)
   })
 }
+
+async function getSummary(path: string): Promise<SummaryResponse & { current_month: string }> {
+  const response = await app.request(path)
+  assert.equal(response.status, 200)
+  return await response.json() as SummaryResponse & { current_month: string }
+}
+
+function offsetMonth(offset: number) {
+  const date = new Date(current.getFullYear(), current.getMonth() + offset, 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+test('10-year period starts at the first known filtered balance and planned timelines preserve that comparison', async () => {
+  const baseline = offsetMonth(-2)
+  await reset(seed(), [
+    point('alice-start', 'account', baseline, 100), point('alice-current', 'account', month, 150),
+    point('alice-plan', 'account', offsetMonth(1), 999),
+    point('bob-start', 'loan', offsetMonth(-5), -40), point('bob-current', 'loan', month, -20),
+  ])
+  const actual = await getSummary('/api/v1/summary?range=10y&person=alice')
+  assert.equal(actual.period_start_month, baseline)
+  assert.equal(actual.period_delta_available, true)
+  assert.equal(actual.period_delta_pct_available, true)
+  assert.equal(actual.period_delta_abs, 50)
+  assert.equal(actual.period_delta_pct, 50)
+  assert.equal(actual.totals[0], 0)
+  assert.equal(actual.current_total, 150)
+  const planned = await getSummary('/api/v1/summary?range=10y&person=alice&planned=true')
+  assert.equal(planned.months.at(-1), offsetMonth(1))
+  for (const key of ['current_month', 'current_total', 'period_start_month', 'period_delta_available', 'period_delta_pct_available', 'period_delta_abs', 'period_delta_pct'] as const) {
+    assert.equal(planned[key], actual[key])
+  }
+  assert.deepEqual(planned.asset_breakdown, actual.asset_breakdown)
+  const otherPerson = await getSummary('/api/v1/summary?range=10y&person=bob')
+  assert.equal(otherPerson.period_start_month, offsetMonth(-5))
+  assert.equal(otherPerson.period_delta_abs, 20)
+  assert.equal(otherPerson.current_total, -20)
+})
+
+test('period availability distinguishes explicit zero from missing and future-only person data', async () => {
+  await reset(seed(), [
+    point('zero', 'account', offsetMonth(-2), 0), point('current', 'account', month, 100),
+    point('future-only', 'loan', offsetMonth(1), -50),
+  ])
+  const zero = await getSummary('/api/v1/summary?range=10y&person=alice')
+  assert.equal(zero.period_start_month, offsetMonth(-2))
+  assert.equal(zero.period_delta_available, true)
+  assert.equal(zero.period_delta_abs, 100)
+  assert.equal(zero.period_delta_pct_available, false)
+  const missing = await getSummary('/api/v1/summary?range=10y&person=bob&planned=true')
+  assert.equal(missing.period_start_month, null)
+  assert.equal(missing.period_delta_available, false)
+  assert.equal(missing.period_delta_pct_available, false)
+  assert.equal(missing.current_total, 0)
+  assert.equal(missing.totals.at(-1), -50)
+})
+
+test('a carried balance preceding the selected range uses the selected first month as baseline', async () => {
+  await reset(seed(), [point('stale', 'account', offsetMonth(-10), 100)])
+  const summary = await getSummary('/api/v1/summary?range=6m&person=alice')
+  assert.equal(summary.period_start_month, offsetMonth(-5))
+  assert.equal(summary.period_delta_available, true)
+  assert.equal(summary.period_delta_pct_available, true)
+  assert.equal(summary.period_delta_abs, 0)
+  assert.equal(summary.period_delta_pct, 0)
+})

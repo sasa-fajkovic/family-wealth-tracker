@@ -86,7 +86,15 @@ export function locfFill(
 
 // ── SummaryResponse ───────────────────────────────────────────────────────────
 
-export interface SummaryResponse {
+interface PeriodChange {
+  period_start_month: string | null
+  period_delta_available: boolean
+  period_delta_pct_available: boolean
+  period_delta_abs: number
+  period_delta_pct: number
+}
+
+export interface SummaryResponse extends PeriodChange {
   coverage: { observed: number; carried: number; missing: number; total: number }
   months: string[]
   series: {
@@ -101,8 +109,6 @@ export interface SummaryResponse {
   gross_assets: number
   total_liabilities: number
   monthly_delta_abs: number
-  period_delta_abs: number
-  period_delta_pct: number
   category_breakdown: {
     category_id: string
     category_name: string
@@ -136,7 +142,11 @@ export interface SummaryResponse {
     value: number
     pct_of_total: number
     monthly_delta_abs: number
+    period_start_month: string | null
+    period_delta_available: boolean
+    period_delta_pct_available: boolean
     period_delta_abs: number
+    period_delta_pct: number
   }[]
 }
 
@@ -154,7 +164,7 @@ export interface SummaryResponse {
  * SUM-04: per-category series (all categories included, even if no assets)
  * SUM-05: per-month totals (sum across all categories)
  * SUM-06: stock — current_total = last element of totals[]; flow — current_total = sum of totals[]
- * SUM-07: period_delta_abs = currentTotal - firstTotal; period_delta_pct = 0 when firstTotal === 0
+ * SUM-07: period deltas start at the first known month in the selected window; availability flags distinguish missing comparisons and zero baselines.
  * SUM-08: category_breakdown with pct_of_total = 0 when currentTotal === 0
  */
 export function aggregateSummary(
@@ -210,13 +220,8 @@ export function aggregateSummary(
   )
 
   const currentTotal = isFlow ? sumValues(totals) : lastValue(totals)
-  const firstTotal = totals.length > 0 ? totals[0] : 0
-
-  // Period deltas are stock-mode concepts; for flows we report 0.
-  const period_delta_abs = isFlow ? 0 : currentTotal - firstTotal
-  const period_delta_pct = isFlow || firstTotal === 0
-    ? 0
-    : (period_delta_abs / firstTotal) * 100
+  const period = periodChange(totals, months.map((_, index) =>
+    asset_series.some(asset => asset.observation_status[index] !== 'missing')), months, isFlow)
 
   // monthly_delta_abs: change from second-to-last month to last month (stock only)
   const monthly_delta_abs = isFlow
@@ -243,7 +248,6 @@ export function aggregateSummary(
   const asset_breakdown = asset_series.map(s => {
     const value = aggregateValues(s.values)
     const prev = s.values.length >= 2 ? s.values[s.values.length - 2] : lastValue(s.values)
-    const first = s.values.length > 0 ? s.values[0] : 0
     const pct_of_total = currentTotal === 0 ? 0 : (value / currentTotal) * 100
     return {
       observation_month: s.observation_months.at(-1) ?? null,
@@ -258,7 +262,7 @@ export function aggregateSummary(
       value,
       pct_of_total,
       monthly_delta_abs: isFlow ? 0 : lastValue(s.values) - prev,
-      period_delta_abs: isFlow ? 0 : lastValue(s.values) - first,
+      ...periodChange(s.values, s.observation_status.map(status => status !== 'missing'), months, isFlow),
     }
   })
 
@@ -273,14 +277,28 @@ export function aggregateSummary(
     gross_assets,
     total_liabilities,
     monthly_delta_abs,
-    period_delta_abs,
-    period_delta_pct,
+    ...period,
     category_breakdown,
     asset_series,
     asset_breakdown,
   }
   assertFiniteNumbers(response)
   return response
+}
+
+function periodChange(values: number[], known: boolean[], months: string[], isFlow: boolean): PeriodChange {
+  const first = isFlow ? -1 : known.findIndex(Boolean)
+  const last = values.length - 1
+  const available = first >= 0 && first < last && known[last]
+  const percentageAvailable = available && values[first] !== 0
+  const delta = available ? values[last] - values[first] : 0
+  return {
+    period_start_month: first >= 0 ? months[first] : null,
+    period_delta_available: available,
+    period_delta_pct_available: percentageAvailable,
+    period_delta_abs: delta,
+    period_delta_pct: percentageAvailable ? delta / values[first] * 100 : 0,
+  }
 }
 
 function assertFiniteNumbers(value: unknown): void {

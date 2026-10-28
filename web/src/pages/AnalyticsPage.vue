@@ -298,20 +298,16 @@ const categoryDrilldownRows = computed(() => {
   // For Income drilldown, use the cash-inflow summary (the wealth summary doesn't include cash-inflow).
   const source = drilldownType.value === 'cash-inflow' ? cashInflowData.value : data.value
   if (!source) return []
-  // For asset & liability drilldown, "active in range" means the per-month series
-  // has any non-zero value within the selected range — this lets paid-off liabilities
-  // and sold-off assets still appear, matching what the trend charts above show.
-  // For income, value is cumulative across the range, so a strict !== 0 test is enough.
   const hadActivity = (assetId: string) => {
     const series = source.asset_series.find(s => s.asset_id === assetId)
-    return !!series && series.values.some(v => v !== 0)
+    return !!series && series.observation_status.some(status => status !== 'missing')
   }
   return [...source.category_breakdown]
     .filter(row => row.category_type === drilldownType.value)
     .map(row => {
       const assets = source.asset_breakdown
         .filter(asset => asset.category_id === row.category_id)
-        .filter(asset => drilldownType.value === 'cash-inflow' ? asset.value !== 0 : hadActivity(asset.asset_id))
+        .filter(asset => hadActivity(asset.asset_id))
         .sort((a, b) => Math.abs(b.value) - Math.abs(a.value) || a.asset_name.localeCompare(b.asset_name))
       return { ...row, assets }
     })
@@ -326,6 +322,13 @@ const activeCategoryId = computed(() =>
 const selectedCategoryDrilldown = computed(() =>
   categoryDrilldownRows.value.find(row => row.category_id === activeCategoryId.value) ?? null
 )
+
+function hasMonthlyChange(asset: AssetBreakdownRow): boolean {
+  const source = drilldownType.value === 'cash-inflow' ? cashInflowData.value : data.value
+  if (!source || drilldownType.value === 'cash-inflow' || source.months.length < 2) return false
+  const series = source.asset_series.find(item => item.asset_id === asset.asset_id)
+  return !!series && series.observation_status.slice(-2).every(status => status !== 'missing')
+}
 
 function selectCategory(categoryId: string) {
   selectedCategoryId.value = categoryId
@@ -768,33 +771,28 @@ const radarOptions = computed((): ChartOptions<'radar'> => {
 })
 
 // ── Chart 8: Scatter – Category current value vs period change ─────────────────
-const showScatter = computed(() =>
-  (data.value?.category_breakdown.filter(r => r.value !== 0).length ?? 0) >= 2
-)
-
 const scatterChartData = computed((): ChartData<'scatter'> => {
   if (!data.value) return { datasets: [] }
-
-  const datasets = data.value.category_breakdown
-    .filter(r => r.value !== 0)
-    .map(row => {
-      const series = data.value!.series.find(s => s.category_id === row.category_id)
-      const nonZero = (series?.values ?? []).filter(v => v !== 0)
-      const periodChange = nonZero.length >= 2 ? nonZero[nonZero.length - 1] - nonZero[0] : 0
-
-      return {
-        label: row.category_name,
-        data: [{ x: Math.abs(row.value), y: periodChange }] as ScatterDataPoint[],
-        backgroundColor: row.color + 'cc',
-        borderColor: row.color,
-        pointRadius: 10,
-        pointHoverRadius: 12,
-        borderWidth: 2,
-      }
-    })
-
+  const summary = data.value
+  const datasets = summary.category_breakdown.flatMap(row => {
+    const series = summary.series.find(s => s.category_id === row.category_id)
+    if (!series) return []
+    const known = series.values.map((_, i) => i).filter(i => hasObservation(summary, i, row.category_id))
+    if (known.length < 2 || known[known.length - 1] !== summary.months.length - 1) return []
+    const periodChange = series.values[known[known.length - 1]] - series.values[known[0]]
+    return [{
+      label: row.category_name,
+      data: [{ x: Math.abs(row.value), y: periodChange }] as ScatterDataPoint[],
+      backgroundColor: row.color + 'cc',
+      borderColor: row.color,
+      pointRadius: 10,
+      pointHoverRadius: 12,
+      borderWidth: 2,
+    }]
+  })
   return { datasets }
 })
+const showScatter = computed(() => scatterChartData.value.datasets.length >= 2)
 
 const scatterOptions = computed((): ChartOptions<'scatter'> => {
   const t = getChartTokens(theme.value === 'dark')
@@ -985,18 +983,19 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Period Change</p>
-            <p :class="['text-lg font-bold tabular-nums', deltaClass(data.period_delta_abs)]">{{ hasObservation(data, 0) && hasObservation(data, data.months.length - 1) ? signedEur(data.period_delta_abs) : '—' }}</p>
+            <p :class="['text-lg font-bold tabular-nums', data.period_delta_available ? deltaClass(data.period_delta_abs) : 'text-gray-500 dark:text-zinc-400']">{{ data.period_delta_available ? signedEur(data.period_delta_abs) : '—' }}</p>
+            <p v-if="data.period_delta_available && data.period_start_month" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Since {{ data.period_start_month }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Monthly Change</p>
-            <p :class="['text-lg font-bold tabular-nums', deltaClass(data.monthly_delta_abs)]">
+            <p :class="['text-lg font-bold tabular-nums', data.months.length >= 2 && hasObservation(data, data.months.length - 2) && hasObservation(data, data.months.length - 1) ? deltaClass(data.monthly_delta_abs) : 'text-gray-500 dark:text-zinc-400']">
               {{ data.months.length >= 2 && hasObservation(data, data.months.length - 2) && hasObservation(data, data.months.length - 1) ? signedEur(data.monthly_delta_abs) : '—' }}
             </p>
           </div>
         </div>
 
         <!-- Row 1: Net Worth Trend + Allocation Doughnut -->
-        <div class="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 mb-4">
+        <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4 mb-4">
           <ChartCard title="Net Worth Trend">
             <div class="h-[280px]">
               <Line :data="(trendData as ChartData<'line'>)" :options="(trendOptions as ChartOptions<'line'>)" />
@@ -1015,8 +1014,8 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
           </ChartCard>
         </div>
 
-        <!-- Row 2: Top Contributors + Assets vs Liabilities -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- Row 2: Top Contributors -->
+        <div class="min-w-0 mb-4">
           <ChartCard>
             <template #title>
               <h2 class="text-sm font-semibold text-gray-900 dark:text-zinc-100 truncate">
@@ -1045,9 +1044,9 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
           </ChartCard>
         </div>
 
-        <!-- Row 3: Polar Area (conditional on 3+ categories) + Category Drilldown -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-          <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm min-w-0">
+        <!-- Row 3: Category Drilldown -->
+        <div class="min-w-0 mb-4">
+          <div data-testid="analytics-drilldown" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm min-w-0">
             <div class="mb-3">
               <div class="flex flex-col gap-3">
                 <div>
@@ -1071,8 +1070,8 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
               </div>
             </div>
 
-            <div v-if="categoryDrilldownRows.length" class="grid grid-cols-1 sm:grid-cols-[170px_1fr] gap-3">
-              <div class="flex max-h-[280px] flex-col gap-1 overflow-y-auto pr-1">
+            <div v-if="categoryDrilldownRows.length" class="grid grid-cols-1 sm:grid-cols-[minmax(220px,260px)_minmax(0,1fr)] gap-3">
+              <div class="flex min-w-0 flex-col gap-1 pr-1">
                 <button
                   v-for="row in categoryDrilldownRows"
                   :key="row.category_id"
@@ -1085,7 +1084,7 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
                 >
                   <span class="flex items-center gap-2">
                     <span class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: row.color }" />
-                    <span class="min-w-0 flex-1 text-sm font-medium text-gray-700 dark:text-zinc-200">
+                    <span class="min-w-0 flex-1 break-words text-sm font-medium text-gray-700 dark:text-zinc-200">
                       {{ row.category_name }}
                     </span>
                   </span>
@@ -1096,10 +1095,10 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
                 </button>
               </div>
 
-              <div v-if="selectedCategoryDrilldown" class="min-w-0 rounded-xl bg-gray-50 p-3 dark:bg-zinc-950/60">
+              <div v-if="selectedCategoryDrilldown" data-testid="analytics-drilldown-detail" class="min-w-0 rounded-xl bg-gray-50 p-3 dark:bg-zinc-950/60">
                 <div class="mb-3 flex items-start justify-between gap-3">
                   <div class="min-w-0">
-                    <p class="text-sm font-semibold text-gray-900 dark:text-zinc-100">
+                    <p class="break-words text-sm font-semibold text-gray-900 dark:text-zinc-100">
                       {{ selectedCategoryDrilldown.category_name }}
                     </p>
                     <p class="text-xs text-gray-500 dark:text-zinc-400">
@@ -1111,29 +1110,29 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
                   >{{ categoryTypeLabel(selectedCategoryDrilldown.category_type) }}</span>
                 </div>
 
-                <div class="max-h-[220px] overflow-y-auto">
+                <div class="min-w-0">
                   <div
                     v-for="asset in selectedCategoryDrilldown.assets"
                     :key="asset.asset_id"
-                    class="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 border-b border-gray-200 py-2 last:border-0 dark:border-zinc-800"
+                    class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 border-b border-gray-200 py-2 last:border-0 dark:border-zinc-800"
                   >
-                    <div class="min-w-0">
-                      <p class="truncate text-sm font-medium text-gray-800 dark:text-zinc-200">{{ asset.asset_name }}</p>
-                      <p class="text-xs text-gray-400 dark:text-zinc-500">{{ personName(asset.person_id) }}</p>
-                      <p class="text-xs text-gray-500 dark:text-zinc-400">{{ asset.observation_status === 'missing' ? 'No observation' : `${asset.observation_status === 'carried' ? 'Carried from' : 'Observed'} ${asset.observation_month}` }}</p>
+                    <div class="min-w-0 space-y-1">
+                      <p class="m-0 break-words text-sm font-medium leading-5 text-gray-800 dark:text-zinc-200">{{ asset.asset_name }}</p>
+                      <p class="m-0 break-words text-xs leading-4 text-gray-400 dark:text-zinc-500">{{ personName(asset.person_id) }}</p>
+                      <p class="m-0 text-xs leading-4 text-gray-500 dark:text-zinc-400">{{ asset.observation_status === 'missing' ? 'No observation' : `${asset.observation_status === 'carried' ? 'Carried from' : 'Observed'} ${asset.observation_month}` }}</p>
                     </div>
-                    <div class="text-right">
+                    <div class="shrink-0 space-y-1 whitespace-nowrap text-right">
                       <p
-                        class="text-sm font-semibold tabular-nums"
+                        class="m-0 text-sm font-semibold leading-5 tabular-nums"
                         :class="asset.category_type === 'liability' ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-zinc-100'"
                       >
                         {{ eurFmt.format(asset.value) }}
                       </p>
                       <p
-                        class="text-xs tabular-nums"
-                        :class="deltaClass(asset.monthly_delta_abs)"
+                        class="m-0 text-xs leading-4 tabular-nums"
+                        :class="hasMonthlyChange(asset) ? deltaClass(asset.monthly_delta_abs) : 'text-gray-500 dark:text-zinc-400'"
                       >
-                        {{ signedEur(asset.monthly_delta_abs) }} mo
+                        {{ hasMonthlyChange(asset) ? signedEur(asset.monthly_delta_abs) : '—' }} mo
                       </p>
                     </div>
                   </div>
@@ -1147,7 +1146,7 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
         </div>
 
         <details class="mb-4"><summary class="cursor-pointer font-semibold mb-3">Explore more</summary>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <div data-testid="analytics-explore-grid" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ChartCard title="Current Value Distribution (Polar Area)">
             <div class="h-[300px]">
               <PolarArea
@@ -1161,17 +1160,12 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
             </div>
             <ChartDataTable v-if="showPolar" title="current value distribution" :columns="['Category', 'Value']" :rows="polarTableRows" />
           </ChartCard>
-        </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ChartCard :title="hasLiabilitySeries ? 'Assets vs Liabilities Over Time' : 'Gross Assets Over Time'">
             <div class="h-[280px]">
               <Bar :data="(assetsVsLiabilitiesData as ChartData<'bar'>)" :options="(assetsLiabilitiesOptions as ChartOptions<'bar'>)" />
             </div>
             <ChartDataTable title="assets and liabilities" :columns="['Month', ...assetsVsLiabilitiesData.datasets.map(dataset => dataset.label ?? '')]" :rows="assetsLiabilityTableRows" />
           </ChartCard>
-        </div>
-        <!-- Row 4: Mixed Net Worth Bar+Line + Financial Profile Radar -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ChartCard :title="`Net Worth vs. ${hasCashInflowSeries ? 'Income' : 'Gross Assets'} (Mixed)`">
             <div class="h-[280px]">
               <Bar :data="(mixedData as unknown as ChartData<'bar'>)" :options="(mixedOptions as ChartOptions<'bar'>)" />
@@ -1191,11 +1185,7 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
             </div>
             <ChartDataTable v-if="showRadar" title="financial profile" :columns="['Dimension', 'Share']" :rows="radarTableRows" />
           </ChartCard>
-        </div>
-
-        <!-- Row 5: Scatter + Bubble (conditional on 2+ categories) -->
-        <div v-if="showScatter || showBubble" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-          <ChartCard title="Category Performance Scatter" subtitle="Current value vs. period change per category">
+          <ChartCard v-if="showScatter || showBubble" title="Category Performance Scatter" subtitle="Current value vs. period change per category">
             <div class="h-[280px]">
               <Scatter
                 v-if="showScatter"
@@ -1208,7 +1198,7 @@ const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.l
             </div>
             <ChartDataTable v-if="showScatter" title="category performance" :columns="['Category', 'Current value', 'Period change']" :rows="scatterTableRows" />
           </ChartCard>
-          <ChartCard title="Portfolio Bubble Map" subtitle="Value × monthly delta; bubble size = relative magnitude">
+          <ChartCard v-if="showScatter || showBubble" title="Portfolio Bubble Map" subtitle="Value × monthly delta; bubble size = relative magnitude">
             <div class="h-[280px]">
               <Bubble
                 v-if="showBubble"

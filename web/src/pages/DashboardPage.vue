@@ -221,9 +221,10 @@ function formatSignedEur(v: number) {
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Period Change</p>
-            <p :class="['text-lg font-bold tabular-nums', hasObservation(data, 0) && hasObservation(data, data.months.length - 1) ? deltaClass(data.period_delta_abs) : 'text-gray-500 dark:text-zinc-400']">
-              {{ hasObservation(data, 0) && hasObservation(data, data.months.length - 1) ? formatSignedEur(data.period_delta_abs) : '—' }}
+            <p :class="['text-lg font-bold tabular-nums', data.period_delta_available ? deltaClass(data.period_delta_abs) : 'text-gray-500 dark:text-zinc-400']">
+              {{ data.period_delta_available ? formatSignedEur(data.period_delta_abs) : '—' }}
             </p>
+            <p v-if="data.period_delta_available && data.period_start_month" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Since {{ data.period_start_month }}</p>
           </div>
         </div>
       </template>
