@@ -89,6 +89,11 @@ const displayRows = computed(() =>
 watch(displayRows, value => emit('update:count', value.length), { immediate: true })
 
 const tabLabel = computed(() => TYPE_LABELS[props.categoryType] ?? 'Items')
+function closedLabel(month: string): string {
+  const now = new Date()
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  return month < currentMonth ? `Closed ${month}` : `Closes after ${month}`
+}
 
 async function handleSave(payload: CreateAssetPayload | UpdateAssetPayload) {
   saving.value = true
@@ -205,6 +210,7 @@ async function handleForceConfirm() {
         <template #body="{ data: row }">
           <div class="min-w-44">
             <p class="font-medium text-gray-900 dark:text-zinc-100">{{ row.name }}</p>
+            <span v-if="row.closed_at" class="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-zinc-800 dark:text-zinc-300">{{ closedLabel(row.closed_at) }}</span>
             <p class="mt-0.5 text-xs text-gray-400 dark:text-zinc-500">{{ row.id }}</p>
           </div>
         </template>
@@ -226,12 +232,12 @@ async function handleForceConfirm() {
               : row.projected_yearly_growth < 0
                 ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300'
                 : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'"
-          >{{ row.growthFormatted }}</span>
+          >{{ row.projected_yearly_growth === null ? `${((categoryMap[row.category_id]?.projected_yearly_growth ?? 0) * 100).toFixed(1)}% inherited` : row.growthFormatted }}</span>
         </template>
       </Column>
       <Column field="notes" header="Notes">
         <template #body="{ data: row }">
-          <span class="block max-w-56 truncate text-gray-500 dark:text-zinc-500">{{ row.notes ?? '—' }}</span>
+          <details v-if="row.notes" class="max-w-56 text-gray-500 dark:text-zinc-500"><summary class="cursor-pointer truncate">{{ row.notes }}</summary><p class="whitespace-pre-wrap break-words">{{ row.notes }}</p></details><span v-else>—</span>
         </template>
       </Column>
       <Column field="personName" header="Person">

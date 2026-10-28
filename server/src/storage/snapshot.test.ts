@@ -21,7 +21,7 @@ process.env.SNAPSHOT_RETENTION = '3' // small cap to test pruning
 
 const seedDb = {
   categories: [
-    { id: 'c1', name: 'Cat', projected_yearly_growth: 0, color: '#000', type: 'asset' as const },
+    { id: 'c1', name: 'Cat', projected_yearly_growth: 0, color: '#000000', type: 'asset' as const },
   ],
   persons: [{ id: 'p1', name: 'Alice' }],
   assets: [

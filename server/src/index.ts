@@ -27,7 +27,9 @@ const app = new Hono()
 // STEP 1: Global error handler — MUST be registered before any routes (RESEARCH.md Section 4)
 // Catches HTTPException thrown from all mounted sub-routers (Pitfall F: parent onError handles sub-routers)
 app.onError((err, c) => {
+  if (err instanceof RangeError) return c.json({ error: err.message }, 400)
   if (err instanceof HTTPException) {
+      if (err.res) return err.getResponse()
     return c.json({ error: err.message }, err.status)
   }
   console.error(err)

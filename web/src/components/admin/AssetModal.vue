@@ -32,9 +32,20 @@ const rateInput = ref<number | null>(
     ? props.item.projected_yearly_growth * 100
     : null
 )
+const includeCurrent = ref<boolean | null>(props.item?.include_in_current_wealth ?? null)
+const includeProjection = ref<boolean | null>(props.item?.include_in_projections ?? null)
+const selectedCategory = computed(() => props.categories.find(category => category.id === categoryId.value))
+const futureOnly = computed(() =>
+  !(includeCurrent.value ?? selectedCategory.value?.include_in_current_wealth ?? true) &&
+  (includeProjection.value ?? selectedCategory.value?.include_in_projections ?? true),
+)
 const notes = ref(props.mode === 'edit' ? (props.item!.notes ?? '') : '')
 const showFrom = ref(props.mode === 'edit' ? (props.item!.show_from ?? '') : '')
 const showUntil = ref(props.mode === 'edit' ? (props.item!.show_until ?? '') : '')
+const isClosed = ref(!!props.item?.closed_at)
+const currentDate = new Date()
+const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`
+const closeMonth = ref(props.item?.closed_at ?? currentMonth)
 const validationError = ref<string | null>(null)
 
 const slugPreview = computed(() => props.mode === 'create' ? toSlug(name.value) : props.item!.id)
@@ -87,6 +98,10 @@ function handleSubmit() {
     validationError.value = 'Visible until must be YYYY-MM'
     return
   }
+  if (props.mode === 'edit' && isClosed.value && !yearMonthRe.test(closeMonth.value)) {
+    validationError.value = 'Closing month is required and must be YYYY-MM'
+    return
+  }
   if (from && until && from > until) {
     validationError.value = 'Visible from must be on or before Visible until'
     return
@@ -95,9 +110,10 @@ function handleSubmit() {
   const storedRate = rateInput.value !== null ? rateInput.value / 100 : null
   if (props.mode === 'create') {
     props.onSave({
-      id: slugPreview.value,
       name: name.value.trim(),
       category_id: categoryId.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
       projected_yearly_growth: storedRate,
       notes: notes.value.trim() || undefined,
       person_id: personId.value,
@@ -106,10 +122,13 @@ function handleSubmit() {
     })
   } else {
     props.onSave({
+      closed_at: isClosed.value ? closeMonth.value : null,
       name: name.value.trim(),
       category_id: categoryId.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
       projected_yearly_growth: storedRate,
-      notes: notes.value.trim() || undefined,
+      notes: notes.value.trim(),
       person_id: personId.value,
       show_from: from || null,
       show_until: until || null,
@@ -173,8 +192,38 @@ function handleSubmit() {
         />
       </div>
     </div>
-    <p v-if="validationError" class="text-xs text-red-600 mt-2">{{ validationError }}</p>
-    <p v-if="saveError" class="text-xs text-red-600 mt-2">{{ saveError }}</p>
+    <details v-if="mode === 'edit' || selectedCategory?.type !== 'cash-inflow'" class="mb-4 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
+      <summary class="cursor-pointer text-sm font-semibold">Advanced</summary>
+      <template v-if="selectedCategory?.type !== 'cash-inflow'">
+      <p class="mt-2 text-xs text-gray-500 dark:text-zinc-400">Inherit uses the selected category's setting.</p>
+      <fieldset class="mt-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700"><legend class="px-1 text-sm font-medium">Current wealth</legend>
+        <div class="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeCurrent" type="radio" class="accent-emerald-600" name="asset-current-inclusion" :value="null" /> Inherit ({{ selectedCategory?.include_in_current_wealth === false ? 'excluded' : 'included' }})</label>
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeCurrent" type="radio" class="accent-emerald-600" name="asset-current-inclusion" :value="true" /> Include</label>
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeCurrent" type="radio" class="accent-emerald-600" name="asset-current-inclusion" :value="false" /> Exclude</label>
+        </div>
+      </fieldset>
+      <fieldset class="mt-4 rounded-lg border border-gray-200 p-3 dark:border-zinc-700"><legend class="px-1 text-sm font-medium">Projections</legend>
+        <div class="flex flex-wrap gap-x-4 gap-y-2 text-sm">
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeProjection" type="radio" class="accent-emerald-600" name="asset-projection-inclusion" :value="null" /> Inherit ({{ selectedCategory?.include_in_projections === false ? 'excluded' : 'included' }})</label>
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeProjection" type="radio" class="accent-emerald-600" name="asset-projection-inclusion" :value="true" /> Include</label>
+          <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeProjection" type="radio" class="accent-emerald-600" name="asset-projection-inclusion" :value="false" /> Exclude</label>
+        </div>
+      </fieldset>
+      <p v-if="futureOnly" class="mb-0 mt-3 text-xs text-gray-500 dark:text-zinc-400">Uses future-dated values in projections; current estimates are excluded.</p>
+      </template>
+      <div v-if="mode === 'edit'" class="mt-4 border-t border-gray-200 pt-3 dark:border-zinc-700">
+        <label class="inline-flex min-h-11 items-center gap-2 text-sm font-medium"><input v-model="isClosed" type="checkbox" class="accent-emerald-600" /> Closed</label>
+        <div v-if="isClosed" class="mt-2">
+          <label for="closing-month" class="mb-1 block text-xs font-medium text-gray-600 dark:text-zinc-300">Closing month</label>
+          <input id="closing-month" v-model="closeMonth" type="month" required :aria-invalid="!!validationError && !closeMonth" aria-describedby="closing-help" class="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100" />
+          <p id="closing-help" class="mt-2 text-xs text-gray-500 dark:text-zinc-400">{{ selectedCategory?.type === 'cash-inflow' ? 'This item remains active through the closing month.' : 'Record a final zero value for the closing month before closing. This item remains active through that month.' }}</p>
+        </div>
+      </div>
+    </details>
+    <p v-if="selectedCategory?.type === 'cash-inflow'" class="mb-4 text-xs text-gray-500 dark:text-zinc-400">Income is tracked separately on the Income page.</p>
+    <p v-if="validationError" role="alert" class="text-xs text-red-600 mt-2">{{ validationError }}</p>
+    <p v-if="saveError" role="alert" class="text-xs text-red-600 mt-2">{{ saveError }}</p>
     <template #footer>
       <div class="flex justify-end gap-2">
         <Button label="Cancel" outlined @click="onCancel" type="button" />

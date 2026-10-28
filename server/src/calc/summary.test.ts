@@ -185,7 +185,7 @@ describe('aggregateSummary', () => {
     const dp1 = makeDP('a1', '2024-01', 1000, '2024-01-01T00:00:00.000Z')
     const dp2 = makeDP('a1', '2024-03', 1500, '2024-03-01T00:00:00.000Z')
     const locfData = locfFill(months3, [dp1, dp2], [asset])
-    const result = aggregateSummary([asset], [cat], locfData, months3)
+    const result = aggregateSummary([asset], [cat], locfData, months3, 'stock', [dp1, dp2])
     assert.equal(result.period_delta_abs, 500, 'delta_abs = 1500 - 1000')
     assert.equal(result.period_delta_pct, 50, 'delta_pct = 50% gain')
   })
@@ -201,7 +201,7 @@ describe('aggregateSummary', () => {
       makeDP('a2', '2024-03', 700, '2024-03-01T00:00:00.000Z'),
     ]
     const locfData = locfFill(months3, dps, [a1, a2])
-    const result = aggregateSummary([a1, a2], [cat], locfData, months3)
+    const result = aggregateSummary([a1, a2], [cat], locfData, months3, 'stock', dps)
 
     assert.equal(result.asset_series.length, 2)
     assert.deepEqual(result.asset_series.find(s => s.asset_id === 'a1')?.values, [1000, 1000, 1400])
@@ -289,5 +289,139 @@ describe('flow mode', () => {
     assert.equal(algebra.get('2024-01'), 0)
     assert.equal(algebra.get('2024-02'), 0)
     assert.equal(algebra.get('2024-03'), 0)
+  })
+})
+
+describe('observation provenance', () => {
+  test('distinguishes explicit zero, carry and missing observations', () => {
+    const months = ['2024-01', '2024-02', '2024-03']
+    const assets = [makeAsset('a1'), makeAsset('a2')]
+    const points = [makeDP('a1', '2024-02', 0, '2024-02-01T00:00:00Z')]
+    const result = aggregateSummary(assets, [makeCategory('cat1', 'Stock')], locfFill(months, points, assets), months, 'stock', points)
+    assert.deepEqual(result.asset_series[0].observation_status, ['missing', 'observed', 'carried'])
+    assert.deepEqual(result.asset_series[0].observation_months, [null, '2024-02', '2024-02'])
+    assert.deepEqual(result.coverage, { observed: 0, carried: 1, missing: 1, total: 2 })
+    assert.equal(result.asset_breakdown[0].observation_month, '2024-02')
+  })
+
+  test('flow metadata retains explicit zero and negative observations without counting missing months', () => {
+    const months = ['2024-01', '2024-02', '2024-03']
+    const assets = [makeAsset('a1')]
+    const points = [makeDP('a1', '2024-01', 0, '2024-01-01T00:00:00Z'), makeDP('a1', '2024-03', -20, '2024-03-01T00:00:00Z')]
+    const result = aggregateSummary(assets, [makeCategory('cat1', 'Income')], locfFill(months, points, assets, 'flow'), months, 'flow', points)
+    assert.deepEqual(result.asset_series[0].values, [0, 0, -20])
+    assert.deepEqual(result.asset_series[0].observation_status, ['observed', 'missing', 'observed'])
+    assert.deepEqual(result.asset_series[0].observation_months, ['2024-01', null, '2024-03'])
+    assert.equal(result.current_total, -20)
+  })
+
+  test('compares updated timestamps by instant rather than timezone text', () => {
+    const assets = [makeAsset('a1')]
+    const points = [makeDP('a1', '2024-01', 10, '2024-01-02T01:00:00+02:00'), makeDP('a1', '2024-01', 20, '2024-01-01T23:30:00Z')]
+    assert.equal(locfFill(['2024-01'], points, assets).get('a1')?.get('2024-01'), 20)
+  })
+
+  test('rejects aggregate numeric overflow instead of emitting JSON null', () => {
+    const assets = [makeAsset('a1'), makeAsset('a2')]
+    const points = assets.map(asset => makeDP(asset.id, '2024-01', 1e308, '2024-01-01T00:00:00Z'))
+    assert.throws(() => aggregateSummary(assets, [makeCategory('cat1', 'Stock')], locfFill(['2024-01'], points, assets), ['2024-01']), /finite numeric range/)
+  })
+})
+
+describe('period baselines', () => {
+  const months = ['2024-01', '2024-02', '2024-03']
+  const assets = [makeAsset('a1')]
+  const categories = [makeCategory('cat1', 'Stock')]
+  const summarize = (points: DataPoint[], mode: 'stock' | 'flow' = 'stock') => aggregateSummary(
+    assets, categories, locfFill(months, points, assets, mode), months, mode, points,
+  )
+
+  test('skips leading missing months instead of treating their zero fill as the baseline', () => {
+    const result = summarize([
+      makeDP('a1', '2024-02', 100, '2024-02-01T00:00:00Z'),
+      makeDP('a1', '2024-03', 150, '2024-03-01T00:00:00Z'),
+    ])
+    assert.deepEqual(result.totals, [0, 100, 150])
+    assert.equal(result.period_start_month, '2024-02')
+    assert.equal(result.period_delta_abs, 50)
+    assert.equal(result.period_delta_pct, 50)
+    assert.equal(result.period_delta_available, true)
+    assert.equal(result.period_delta_pct_available, true)
+    assert.equal(result.asset_breakdown[0].period_start_month, '2024-02')
+    assert.equal(result.asset_breakdown[0].period_delta_abs, 50)
+  })
+
+  test('all missing observations have no available baseline or comparison', () => {
+    const result = summarize([])
+    assert.equal(result.period_start_month, null)
+    assert.equal(result.period_delta_available, false)
+    assert.equal(result.period_delta_pct_available, false)
+    assert.equal(result.period_delta_abs, 0)
+    assert.equal(result.period_delta_pct, 0)
+  })
+
+  test('an observation only at the final endpoint is not a period comparison', () => {
+    const result = summarize([makeDP('a1', '2024-03', 150, '2024-03-01T00:00:00Z')])
+    assert.equal(result.period_start_month, '2024-03')
+    assert.equal(result.period_delta_available, false)
+    assert.equal(result.period_delta_pct_available, false)
+    assert.equal(result.asset_breakdown[0].period_delta_available, false)
+  })
+
+  test('an explicitly observed zero baseline permits absolute change but no percentage', () => {
+    const result = summarize([
+      makeDP('a1', '2024-02', 0, '2024-02-01T00:00:00Z'),
+      makeDP('a1', '2024-03', 150, '2024-03-01T00:00:00Z'),
+    ])
+    assert.equal(result.period_start_month, '2024-02')
+    assert.equal(result.period_delta_available, true)
+    assert.equal(result.period_delta_abs, 150)
+    assert.equal(result.period_delta_pct_available, false)
+    assert.equal(result.period_delta_pct, 0)
+    assert.equal(result.asset_breakdown[0].period_delta_pct_available, false)
+  })
+
+  test('a stale observation before the range remains a valid LOCF baseline at the window start', () => {
+    const result = summarize([makeDP('a1', '2023-12', 100, '2023-12-01T00:00:00Z')])
+    assert.equal(result.period_start_month, '2024-01')
+    assert.equal(result.period_delta_available, true)
+    assert.equal(result.period_delta_pct_available, true)
+    assert.equal(result.period_delta_abs, 0)
+    assert.equal(result.period_delta_pct, 0)
+  })
+
+  test('future observations never provide a baseline for an earlier historical window', () => {
+    const result = summarize([makeDP('a1', '2024-04', 100, '2024-04-01T00:00:00Z')])
+    assert.equal(result.period_start_month, null)
+    assert.equal(result.period_delta_available, false)
+  })
+
+  test('flow deltas remain unavailable even when multiple observed months exist', () => {
+    const result = summarize([
+      makeDP('a1', '2024-01', 100, '2024-01-01T00:00:00Z'),
+      makeDP('a1', '2024-03', 150, '2024-03-01T00:00:00Z'),
+    ], 'flow')
+    assert.equal(result.current_total, 250)
+    assert.equal(result.period_start_month, null)
+    assert.equal(result.period_delta_available, false)
+    assert.equal(result.period_delta_pct_available, false)
+    assert.equal(result.period_delta_abs, 0)
+    assert.equal(result.period_delta_pct, 0)
+  })
+
+  test('each asset uses its own first known month while the total uses the first known total', () => {
+    const pair = [makeAsset('a1'), makeAsset('a2')]
+    const points = [
+      makeDP('a1', '2024-02', 100, '2024-02-01T00:00:00Z'),
+      makeDP('a1', '2024-03', 150, '2024-03-01T00:00:00Z'),
+      makeDP('a2', '2024-03', 50, '2024-03-01T00:00:00Z'),
+    ]
+    const result = aggregateSummary(pair, categories, locfFill(months, points, pair), months, 'stock', points)
+    assert.equal(result.period_start_month, '2024-02')
+    assert.equal(result.period_delta_abs, 100)
+    assert.equal(result.period_delta_pct, 100)
+    assert.equal(result.asset_breakdown[0].period_delta_abs, 50)
+    assert.equal(result.asset_breakdown[1].period_start_month, '2024-03')
+    assert.equal(result.asset_breakdown[1].period_delta_available, false)
   })
 })

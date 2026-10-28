@@ -88,20 +88,20 @@ describe('buildProjection', () => {
     assert.equal(result.months.length, 360, 'years=30 must produce 360 months')
   })
 
-  test('projection months[0] is one month after latestDP year_month — no overlap', () => {
+  test('projection starts after asOf even when observations are stale', () => {
     const cat = makeCategory('cat1', 0.07)
     const asset = makeAsset('a1', 'cat1')
     const dp = makeDP('a1', '2024-06', 1000)
-    const result = buildProjection([asset], [cat], [dp], 1)
-    assert.equal(result.months[0], '2024-07',
-      'projection must start the month AFTER the latest data point — not the same month')
+    const result = buildProjection([asset], [cat], [dp], 1, 1, '2025-05')
+    assert.equal(result.months[0], '2025-06')
+    assert.equal(result.asOf, '2025-05')
   })
 
   test('December boundary: projection months[0] after 2024-12 is 2025-01', () => {
     const cat = makeCategory('cat1', 0.05)
     const asset = makeAsset('a1', 'cat1')
     const dp = makeDP('a1', '2024-12', 2000)
-    const result = buildProjection([asset], [cat], [dp], 1)
+    const result = buildProjection([asset], [cat], [dp], 1, 1, '2024-12')
     assert.equal(result.months[0], '2025-01', 'December to January rollover must work')
   })
 
@@ -233,14 +233,14 @@ describe('buildProjection floors values at 0', () => {
     assert.ok(proj.series[0].values.at(-1)! < 100)
   })
 
-  test('asset rate < -100% does not produce negative values (e.g. user typo -1.5)', () => {
-    const cat = makeCategory('vehicles', -1.5) // catastrophic typo
+  test('rejects invalid and scenario-adjusted effective rates', () => {
     const asset = makeAsset('car', 'vehicles')
     const dp = makeDP('car', '2024-01', 10000)
-    const proj = buildProjection([asset], [cat], [dp], 1, 1.0)
-    for (const v of proj.series[0].values) {
-      assert.ok(v >= 0 && Number.isFinite(v), `expected finite non-negative value, got ${v}`)
+    for (const rate of [-1.5, NaN, Infinity]) {
+      assert.throws(() => buildProjection([asset], [makeCategory('vehicles', rate)], [dp], 1), RangeError)
     }
+    assert.throws(() => buildProjection([asset], [makeCategory('vehicles', -0.8)], [dp], 1, 1.5), RangeError)
+    assert.equal(compoundMonthlyRate(-1), -1)
   })
 
   test('liability with positive growth rate never crosses above 0 (debt cannot become surplus)', () => {
@@ -295,5 +295,32 @@ describe('buildProjection planned values', () => {
       makeDP('a1', '2024-07', 3, '2024-02-01T00:00:00.000Z'),
     ], 1, 1.0, '2024-06')
     assert.equal(proj.series[0].values[0], 3)
+  })
+})
+
+describe('projection numeric and timestamp integrity', () => {
+  test('rejects overflow while accumulating assets within a category', () => {
+    const assets = [makeAsset('a1'), makeAsset('a2')]
+    const points = assets.map(asset => makeDP(asset.id, '2024-01', 1e308))
+    assert.throws(() => buildProjection(assets, [makeCategory('cat1', 0)], points, 1), /finite numeric range/)
+  })
+
+  test('rejects overflow while totaling different categories', () => {
+    const assets = [makeAsset('a1', 'cat1'), makeAsset('a2', 'cat2')]
+    const points = assets.map(asset => makeDP(asset.id, '2024-01', 1e308))
+    assert.throws(() => buildProjection(assets, [makeCategory('cat1', 0), makeCategory('cat2', 0)], points, 1), /finite numeric range/)
+  })
+
+  test('compares seed and planned timestamps by instant across UTC offsets', () => {
+    const asset = makeAsset('a1')
+    const points = [
+      makeDP('a1', '2024-01', 100, '2024-01-02T01:00:00+02:00'),
+      makeDP('a1', '2024-01', 200, '2024-01-01T23:30:00Z'),
+      makeDP('a1', '2024-03', 300, '2024-01-02T01:00:00+02:00'),
+      makeDP('a1', '2024-03', 400, '2024-01-01T23:30:00Z'),
+    ]
+    const projection = buildProjection([asset], [makeCategory('cat1', 0)], points, 1, 1, '2024-01')
+    assert.deepEqual(projection.series[0].values.slice(0, 3), [300, 400, 400])
+    assert.equal(projection.method, 'compound-growth-with-planned-interpolation')
   })
 })

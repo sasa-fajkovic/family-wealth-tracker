@@ -1,5 +1,7 @@
 // server/src/calc/projections.ts
 import type { Asset, Category, DataPoint } from '../models/index.js'
+import { isActiveInMonth } from './closure.js'
+import { resolveInclusion } from './inclusion.js'
 import { toMonthKey, monthRange } from './utils.js'
 
 // ── addOneMonth (private) ─────────────────────────────────────────────────────
@@ -32,6 +34,7 @@ function currentMonthKey(): string {
  * @returns           Monthly compound rate, e.g. ≈0.006434 for 8% annual
  */
 export function compoundMonthlyRate(annualRate: number): number {
+  if (!Number.isFinite(annualRate) || annualRate < -1) throw new RangeError('Effective annual growth must be finite and at least -100%')
   return Math.pow(1 + annualRate, 1 / 12) - 1
 }
 
@@ -64,12 +67,24 @@ export interface ProjectionSeries {
   category_name: string
   color: string
   values: number[]   // length === months.length
+  available: boolean[]
 }
 
 export interface ProjectionBlock {
+  asOf: string
+  method: 'compound-growth-with-planned-interpolation'
   months: string[]
   series: ProjectionSeries[]
   totals: number[]
+  available: boolean[]
+  asset_metadata: {
+    asset_id: string
+    category_id: string
+    closed_at: string | null
+    effective_include_in_current_wealth: boolean
+    effective_include_in_projections: boolean
+    projection_start_month: string | null
+  }[]
 }
 
 // ── buildProjection ───────────────────────────────────────────────────────────
@@ -77,8 +92,7 @@ export interface ProjectionBlock {
 /**
  * Build a compound-growth projection for years * 12 months.
  *
- * PROJ-04: Projection starts the month AFTER the latest data point up to `asOf`.
- *          When no such data points exist, starts the month after the current calendar month.
+ * PROJ-04: Projection starts the month after `asOf`, carrying the latest observed balance to that anchor.
  *
  * PROJ-02: Monthly rate = compoundMonthlyRate(annualRate) — NEVER annualRate/12.
  * PROJ-03: Growth rate per asset via resolveGrowthRate (asset override or category default).
@@ -107,14 +121,7 @@ export function buildProjection(
   rateMultiplier = 1.0,
   asOf = currentMonthKey(),
 ): ProjectionBlock {
-  // 1. Determine projection anchor: greatest year_month up to asOf
-  const pastPoints = dataPoints.filter(dp => dp.year_month <= asOf)
-  const latestMonth = pastPoints.length === 0
-    ? asOf
-    : pastPoints.reduce(
-        (best, dp) => (dp.year_month > best ? dp.year_month : best),
-        pastPoints[0].year_month
-      )
+  const latestMonth = asOf
 
   // 2. Build months array: years*12 months starting one month after latestMonth
   //    PROJ-04: projStart = addOneMonth(latestMonth) — never latestMonth itself
@@ -128,19 +135,31 @@ export function buildProjection(
 
   const months = monthRange(projStart, projEnd)  // length === years * 12
 
+  const asset_metadata = assets.filter(asset => isActiveInMonth(asset, asOf)).map(asset => {
+    const inclusion = resolveInclusion(asset, categories.find(category => category.id === asset.category_id))
+    const points = dataPoints.filter(point => point.asset_id === asset.id)
+    const seeded = inclusion.effective_include_in_current_wealth && points.some(point => point.year_month <= asOf)
+    const firstFuture = points.filter(point => point.year_month > asOf && isActiveInMonth(asset, point.year_month)).map(point => point.year_month).sort()[0]
+    return { asset_id: asset.id, category_id: asset.category_id, closed_at: asset.closed_at ?? null, ...inclusion,
+      projection_start_month: inclusion.effective_include_in_projections && isActiveInMonth(asset, months[0]) ? seeded ? months[0] : firstFuture ?? null : null }
+  })
+  const metadataById = new Map(asset_metadata.map(metadata => [metadata.asset_id, metadata]))
+
   // 3. Build series: one per category (mirrors aggregateSummary categories.map pattern)
   const series: ProjectionSeries[] = categories.map(cat => {
-    const catAssets = assets.filter(a => a.category_id === cat.id)
+    const catAssets = assets.filter(a => a.category_id === cat.id && isActiveInMonth(a, months[0]) && metadataById.get(a.id)?.effective_include_in_projections)
     const values: number[] = Array(months.length).fill(0)
+    const available: boolean[] = Array(months.length).fill(false)
 
     for (const asset of catAssets) {
       // Find this asset's projection seed
-      const assetDPs = dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth)
+      const metadata = metadataById.get(asset.id)!
+      const assetDPs = metadata.effective_include_in_current_wealth ? dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth) : []
       const planned = new Map<string, DataPoint>()
       for (const dp of dataPoints) {
-        if (dp.asset_id !== asset.id || dp.year_month <= latestMonth) continue
+        if (dp.asset_id !== asset.id || dp.year_month <= latestMonth || !isActiveInMonth(asset, dp.year_month)) continue
         const prev = planned.get(dp.year_month)
-        if (!prev || dp.updated_at > prev.updated_at) planned.set(dp.year_month, dp)
+        if (!prev || Date.parse(dp.updated_at) > Date.parse(prev.updated_at)) planned.set(dp.year_month, dp)
       }
       let seed = 0
       if (assetDPs.length > 0) {
@@ -150,7 +169,7 @@ export function buildProjection(
         )
         const bestDP = assetDPs
           .filter(dp => dp.year_month === latestYM)
-          .reduce((a, b) => (a.updated_at > b.updated_at ? a : b))
+          .reduce((a, b) => (Date.parse(a.updated_at) > Date.parse(b.updated_at) ? a : b))
         seed = bestDP.value
       }
 
@@ -160,12 +179,16 @@ export function buildProjection(
       //  - assets cannot be worth less than 0 (a depreciating car bottoms out at 0)
       //  - liabilities cannot be worth more than 0 (a paid-off debt bottoms out at 0;
       //    they're stored as negative numbers, so 0 is the "fully paid" ceiling)
-      // Non-finite inputs (NaN/Infinity from extreme user-typed rates < -100%) collapse to 0.
+
+      const finite = (x: number) => {
+        if (!Number.isFinite(x)) throw new RangeError('Projection exceeds finite numeric range')
+        return x
+      }
       const clamp = cat.type === 'liability'
-        ? (x: number) => (Number.isFinite(x) && x < 0 ? x : 0)
+        ? (x: number) => (finite(x) < 0 ? x : 0)
         : cat.type === 'asset'
-          ? (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
-          : (x: number) => (Number.isFinite(x) ? x : 0)
+          ? (x: number) => (finite(x) > 0 ? x : 0)
+          : (x: number) => finite(x)
       const plannedValues = months.map(m => planned.get(m)?.value)
       const nextPlanned = (from: number) => plannedValues.findIndex((x, j) => j >= from && x !== undefined)
       let v = seed
@@ -173,6 +196,7 @@ export function buildProjection(
       let prevV = seed
       let nextI = nextPlanned(0)
       for (let i = 0; i < months.length; i++) {
+        if (!isActiveInMonth(asset, months[i])) continue
         if (i === nextI) {
           v = prevV = plannedValues[i]!
           prevI = i
@@ -182,11 +206,14 @@ export function buildProjection(
         } else {
           v = clamp(v * (1 + monthlyRate))
         }
-        values[i] += v   // accumulate: multiple assets in same category sum together
+        if (!Number.isFinite(v)) throw new RangeError('Projection exceeds finite numeric range')
+        if (metadata.projection_start_month && months[i] >= metadata.projection_start_month) available[i] = true
+        values[i] += v
+        if (!Number.isFinite(values[i])) throw new RangeError('Projection exceeds finite numeric range')
       }
     }
 
-    return { category_id: cat.id, category_name: cat.name, color: cat.color, values }
+    return { category_id: cat.id, category_name: cat.name, color: cat.color, values, available }
   })
 
   // 4. totals[i] = sum across all categories for month i
@@ -194,5 +221,7 @@ export function buildProjection(
     series.reduce((sum, s) => sum + s.values[i], 0)
   )
 
-  return { months, series, totals }
+  if (totals.some(value => !Number.isFinite(value))) throw new RangeError('Projection exceeds finite numeric range')
+  const available = months.map((_, index) => series.some(category => category.available[index]))
+  return { months, series, totals, available, asset_metadata, asOf, method: 'compound-growth-with-planned-interpolation' }
 }

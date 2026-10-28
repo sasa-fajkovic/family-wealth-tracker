@@ -76,7 +76,9 @@ const importRouter = (await import('../routes/import.js')).default
 function buildApp() {
   const app = new Hono()
   app.onError((err, c) => {
+  if (err instanceof RangeError) return c.json({ error: err.message }, 400)
     if (err instanceof HTTPException) {
+      if (err.res) return err.getResponse()
       return c.json({ error: err.message }, err.status)
     }
     console.error(err)

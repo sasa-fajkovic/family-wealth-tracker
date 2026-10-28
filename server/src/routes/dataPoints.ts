@@ -4,7 +4,7 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { DataPoint } from '../models/index.js'
-import { readDb, readDataPoints, readDbAndDataPoints, mutateDataPoints } from '../storage/index.js'
+import { readDataPoints, readDbAndDataPoints, mutateDataPoints } from '../storage/index.js'
 import { zodErrorHook as hook } from '../util/zodHook.js'
 
 const router = new Hono()
@@ -16,7 +16,7 @@ const listQuerySchema = z.object({
   person_id: z.string().optional(),
   asset_id: z.string().optional(),
   category_id: z.string().optional(),
-  year_month: z.string().regex(/^\d{4}-\d{2}$/, 'year_month must be YYYY-MM').optional(),
+  year_month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'year_month must be YYYY-MM').optional(),
   sort: z.enum(['year_month', 'asset_id', 'value', 'created_at', 'updated_at']).optional(),
   order: z.enum(['asc', 'desc']).optional(),
 })
@@ -24,18 +24,18 @@ const listQuerySchema = z.object({
 const createSchema = z.object({
   asset_id: z.string().min(1, 'asset_id is required'),
   // D-02/D-03: year_month is always provided by the client — validated format only, never server-computed
-  year_month: z.string().regex(/^\d{4}-\d{2}$/, 'year_month must be YYYY-MM'),
+  year_month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'year_month must be YYYY-MM'),
   value: z.number().finite('value must be a finite number'),
   notes: z.string().optional(),
-})
+}).strict()
 
 const updateSchema = z.object({
   id: z.string().optional(),       // included only to detect and reject id change attempts
   asset_id: z.string().optional(), // included only to detect and reject asset_id change attempts
-  year_month: z.string().regex(/^\d{4}-\d{2}$/, 'year_month must be YYYY-MM'),
+  year_month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'year_month must be YYYY-MM'),
   value: z.number().finite('value must be a finite number'),
   notes: z.string().optional(),
-})
+}).strict()
 
 // DP-01: GET data points with optional pagination and filtering.
 // Without limit: returns a plain DataPoint[] (backward-compatible).
@@ -85,9 +85,9 @@ router.get('/', zValidator('query', listQuerySchema, hook), async (c) => {
     } else if (sort === 'asset_id') {
       cmp = a.asset_id.localeCompare(b.asset_id)
     } else if (sort === 'created_at') {
-      cmp = a.created_at.localeCompare(b.created_at)
+      cmp = Date.parse(a.created_at) - Date.parse(b.created_at)
     } else {
-      cmp = a.updated_at.localeCompare(b.updated_at)
+      cmp = Date.parse(a.updated_at) - Date.parse(b.updated_at)
     }
     return order === 'desc' ? -cmp : cmp
   })
@@ -106,17 +106,6 @@ router.get('/', zValidator('query', listQuerySchema, hook), async (c) => {
 router.post('/', zValidator('json', createSchema, hook), async (c) => {
   const body = c.req.valid('json')
 
-  const db = await readDb()
-  const asset = db.assets.find((a) => a.id === body.asset_id)
-  if (!asset) {
-    throw new HTTPException(404, { message: 'Asset not found' })
-  }
-
-  const category = db.categories.find((cat) => cat.id === asset.category_id)
-  if (category?.type === 'liability' && body.value > 0) {
-    throw new HTTPException(400, { message: 'Liability values must be zero or negative' })
-  }
-
   const now = new Date().toISOString()
   const point: DataPoint = {
     id: randomUUID(),
@@ -125,7 +114,20 @@ router.post('/', zValidator('json', createSchema, hook), async (c) => {
     updated_at: now,
   }
   await mutateDataPoints(
-    (points) => [...points, point],
+    (points, db) => {
+      const asset = db.assets.find((a) => a.id === body.asset_id)
+      if (!asset) {
+        throw new HTTPException(404, { message: 'Asset not found' })
+      }
+
+      const category = db.categories.find((cat) => cat.id === asset.category_id)
+      if (category?.type === 'liability' && body.value > 0) {
+        throw new HTTPException(400, { message: 'Liability values must be zero or negative' })
+      }
+
+        if (points.some(p => p.asset_id === body.asset_id && p.year_month === body.year_month)) throw new HTTPException(409, { message: 'A data point already exists for this asset and month' })
+      return [...points, point]
+    },
     { action: 'datapoint.create', meta: { id: point.id, asset_id: point.asset_id, year_month: point.year_month } },
   )
   return c.json(point, 201)
@@ -137,90 +139,42 @@ router.post('/', zValidator('json', createSchema, hook), async (c) => {
 const batchUpsertSchema = z.object({
   items: z.array(z.object({
     asset_id: z.string().min(1, 'asset_id is required'),
-    year_month: z.string().regex(/^\d{4}-\d{2}$/, 'year_month must be YYYY-MM'),
+    year_month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'year_month must be YYYY-MM'),
     value: z.number().finite('value must be a finite number'),
     notes: z.string().optional(),
-  })).min(1, 'items must not be empty').max(500, 'too many items (max 500)'),
-})
+  }).strict()).min(1, 'items must not be empty').max(500, 'too many items (max 500)'),
+}).strict()
 
 router.post('/batch', zValidator('json', batchUpsertSchema, hook), async (c) => {
   const { items } = c.req.valid('json')
-
-  // Read db + data points together for consistent validation snapshot
-  const { db, dataPoints: snapshotPoints } = await readDbAndDataPoints()
-  const assetMap = new Map(db.assets.map(a => [a.id, a]))
-  const categoryMap = new Map(db.categories.map(cat => [cat.id, cat]))
-
-  // Pre-validate all items (asset existence + liability constraint)
-  type ValidItem = (typeof items)[number] & { existing: DataPoint | undefined }
-  const validItems: ValidItem[] = []
+  const keys = items.map(item => `${item.asset_id}|${item.year_month}`)
+  if (new Set(keys).size !== keys.length) throw new HTTPException(409, { message: 'Duplicate asset/month keys in batch' })
   const errors: { asset_id: string; year_month: string; error: string }[] = []
-  let failed = 0
-
-  const snapshotIndex = new Map(snapshotPoints.map(dp => [`${dp.asset_id}|${dp.year_month}`, dp]))
-
-  for (const item of items) {
-    const asset = assetMap.get(item.asset_id)
-    if (!asset) {
-      errors.push({ asset_id: item.asset_id, year_month: item.year_month, error: 'Asset not found' })
-      failed++
-      continue
-    }
-    const category = categoryMap.get(asset.category_id)
-    if (category?.type === 'liability' && item.value > 0) {
-      errors.push({ asset_id: item.asset_id, year_month: item.year_month, error: 'Liability values must be zero or negative' })
-      failed++
-      continue
-    }
-    validItems.push({ ...item, existing: snapshotIndex.get(`${item.asset_id}|${item.year_month}`) })
-  }
-
   let created = 0
   let updated = 0
-  const now = new Date().toISOString()
-
-  if (validItems.length > 0) {
-    // Apply creates + updates atomically inside the mutex; counts are computed from fresh data.
-    await mutateDataPoints(
-      (pts) => {
-        created = 0
-        updated = 0
-        const liveIndex = new Map(pts.map(dp => [`${dp.asset_id}|${dp.year_month}`, dp]))
-        const toCreate: DataPoint[] = []
-        const toUpdate = new Map<string, DataPoint>()
-
-        for (const item of validItems) {
-          const key = `${item.asset_id}|${item.year_month}`
-          const existing = liveIndex.get(key)
-          if (existing) {
-            toUpdate.set(existing.id, {
-              ...existing,
-              value: item.value,
-              notes: item.notes,
-              updated_at: now,
-            })
-            updated++
-          } else {
-            toCreate.push({
-              id: randomUUID(),
-              asset_id: item.asset_id,
-              year_month: item.year_month,
-              value: item.value,
-              notes: item.notes,
-              created_at: now,
-              updated_at: now,
-            })
-            created++
-          }
-        }
-
-        return [...pts.map(dp => toUpdate.get(dp.id) ?? dp), ...toCreate]
-      },
-      { action: 'datapoint.batch', meta: { created, updated, failed } },
-    )
-  }
-
-  return c.json({ created, updated, skipped: 0, failed, errors }, 200)
+  await mutateDataPoints((points, db) => {
+    const result = [...points]
+    const now = new Date().toISOString()
+    for (const item of items) {
+      const asset = db.assets.find(a => a.id === item.asset_id)
+      const category = db.categories.find(cat => cat.id === asset?.category_id)
+      const matches = points.filter(p => p.asset_id === item.asset_id && p.year_month === item.year_month)
+      const error = !asset ? 'Asset not found' : category?.type === 'liability' && item.value > 0
+        ? 'Liability values must be zero or negative' : matches.length > 1 ? 'Existing duplicate asset/month keys require manual repair' : null
+      if (error) { errors.push({ asset_id: item.asset_id, year_month: item.year_month, error }); continue }
+      const existing = matches[0]
+      if (existing) {
+        result[result.findIndex(p => p.id === existing.id)] = { ...existing, value: item.value,
+          ...(item.notes !== undefined ? { notes: item.notes } : {}), updated_at: now }
+        updated++
+      } else {
+        result.push({ id: randomUUID(), ...item, created_at: now, updated_at: now })
+        created++
+      }
+    }
+    return result
+  }, { action: 'datapoint.batch', meta: () => ({ created, updated, failed: errors.length }) })
+  return c.json({ created, updated, skipped: 0, failed: errors.length, errors })
 })
 
 // DP-03: PUT — update year_month/value/notes; refresh updated_at; block id and asset_id changes
@@ -232,37 +186,20 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
     throw new HTTPException(400, { message: 'id cannot be changed' })
   }
 
-  // DP-03-PERF: single mutex acquisition — readDbAndDataPoints reads both files
-  // under one lock, so we don't pay the readDataPoints + readDb cost separately.
-  const { db, dataPoints } = await readDbAndDataPoints()
-  const existing = dataPoints.find((dp) => dp.id === paramId)
-  if (!existing) throw new HTTPException(404, { message: 'Data point not found' })
-
-  if (body.asset_id !== undefined && body.asset_id !== existing.asset_id) {
-    throw new HTTPException(400, { message: 'asset_id cannot be changed' })
-  }
-
-  // updateSchema requires `value` (non-optional zod number), so it is always defined.
-  const asset = db.assets.find((a) => a.id === existing.asset_id)
-  const category = db.categories.find((cat) => cat.id === asset?.category_id)
-  if (category?.type === 'liability' && body.value > 0) {
-    throw new HTTPException(400, { message: 'Liability values must be zero or negative' })
-  }
-
-  // Destructure immutable fields out so they are never overridden from body
-  // _ prefix exempts variables from noUnusedLocals
-  const { id: _id, asset_id: _assetId, ...updateFields } = body
-  const updated: DataPoint = {
-    ...existing,     // preserves id, asset_id, created_at
-    ...updateFields, // applies year_month, value, notes from body
-    id: paramId,     // force correct id
-    asset_id: existing.asset_id, // preserve immutable asset_id
-    updated_at: new Date().toISOString(),
-  }
-  await mutateDataPoints(
-    (points) => points.map((dp) => (dp.id === paramId ? updated : dp)),
-    { action: 'datapoint.update', meta: { id: paramId, asset_id: updated.asset_id, year_month: updated.year_month } },
-  )
+  let updated!: DataPoint
+  await mutateDataPoints((points, db) => {
+    const existing = points.find(p => p.id === paramId)
+    if (!existing) throw new HTTPException(404, { message: 'Data point not found' })
+    if (body.asset_id !== undefined && body.asset_id !== existing.asset_id) throw new HTTPException(400, { message: 'asset_id cannot be changed' })
+    const asset = db.assets.find(a => a.id === existing.asset_id)
+    if (!asset) throw new HTTPException(404, { message: 'Asset not found' })
+    const category = db.categories.find(cat => cat.id === asset.category_id)
+    if (category?.type === 'liability' && body.value > 0) throw new HTTPException(400, { message: 'Liability values must be zero or negative' })
+    if (points.some(p => p.id !== paramId && p.asset_id === existing.asset_id && p.year_month === body.year_month)) throw new HTTPException(409, { message: 'A data point already exists for this asset and month' })
+    updated = { ...existing, year_month: body.year_month, value: body.value,
+      ...(body.notes !== undefined ? { notes: body.notes } : {}), updated_at: new Date().toISOString() }
+    return points.map(p => p.id === paramId ? updated : p)
+  }, { action: 'datapoint.update', meta: () => ({ id: paramId, asset_id: updated.asset_id, year_month: updated.year_month }) })
   return c.json(updated)
 })
 
@@ -270,15 +207,10 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
 router.delete('/:id', async (c) => {
   const id = c.req.param('id')
 
-  const dataPoints = await readDataPoints()
-  if (!dataPoints.find((dp) => dp.id === id)) {
-    throw new HTTPException(404, { message: 'Data point not found' })
-  }
-
-  await mutateDataPoints(
-    (points) => points.filter((dp) => dp.id !== id),
-    { action: 'datapoint.delete', meta: { id } },
-  )
+  await mutateDataPoints(points => {
+    if (!points.some(p => p.id === id)) throw new HTTPException(404, { message: 'Data point not found' })
+    return points.filter(p => p.id !== id)
+  }, { action: 'datapoint.delete', meta: { id } })
   return c.json({ success: true })
 })
 

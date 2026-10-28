@@ -285,36 +285,104 @@ a {
   justify-content: center;
 }
 
-.wt-month-select {
-  --p-select-border-color: transparent;
-  --p-select-hover-border-color: transparent;
-  --p-select-focus-border-color: transparent;
-  --p-select-shadow: none;
-  --p-select-focus-ring-shadow: 0 0 0 2px rgba(16, 185, 129, 0.18);
+.wt-period-group {
+  display: inline-flex;
+  height: 44px;
+  align-items: center;
+  border-radius: 0.75rem;
+  background: #f3f4f6;
+  box-shadow: inset 0 0 0 1px #e5e7eb;
+}
+
+.wt-period-arrow {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: #52525b;
+  cursor: pointer;
+}
+
+.wt-period-arrow:hover, .wt-period-current:hover {
+  background: #e5e7eb;
+  color: #18181b;
+}
+
+.wt-period-arrow:focus-visible, .wt-period-current:focus-visible,
+.wt-period-year:focus-within, .wt-month-select.p-select.p-focus {
+  outline: 2px solid #10b981;
+  outline-offset: -2px;
+}
+
+.wt-period-year {
+  display: inline-flex;
+  height: 44px;
+  align-items: center;
+  gap: 0.25rem;
+  padding-inline: 0.5rem;
+  color: #52525b;
+}
+
+.wt-period-year-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.wt-period-year input {
+  width: 3.5rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #18181b;
+  font-size: 0.875rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  appearance: textfield;
+}
+
+.wt-period-year input::-webkit-inner-spin-button,
+.wt-period-year input::-webkit-outer-spin-button { appearance: none; }
+
+.wt-period-current {
+  height: 44px;
+  padding-inline: 0.875rem;
+  border: 1px solid #d1d5db;
+  border-radius: 0.75rem;
+  background: transparent;
+  color: #52525b;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .wt-month-select.p-select {
+  width: 7.5rem;
+  height: 44px;
   border: 0 !important;
-  border-radius: 0.75rem !important;
-  background: rgba(243, 244, 246, 0.9) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
   box-shadow: none !important;
-}
-
-.p-dark .wt-month-select.p-select {
-  background: rgba(39, 39, 42, 0.8) !important;
 }
 
 .wt-month-select .p-select-label {
   display: flex;
   align-items: center;
+  padding-inline: 0.5rem 0 !important;
+  color: #18181b;
+  font-size: 0.875rem;
   font-weight: 700;
-  color: #111827;
-  padding-inline: 1rem 0.5rem !important;
 }
 
-.p-dark .wt-month-select .p-select-label {
-  color: #f4f4f5;
-}
+.p-dark .wt-period-group { background: #27272a; box-shadow: inset 0 0 0 1px #3f3f46; }
+.p-dark .wt-period-arrow, .p-dark .wt-period-current, .p-dark .wt-period-year { color: #d4d4d8; }
+.p-dark .wt-period-year input, .p-dark .wt-month-select .p-select-label { color: #f4f4f5; }
+.p-dark .wt-period-current { border-color: #52525b; }
+.p-dark .wt-period-arrow:hover, .p-dark .wt-period-current:hover { background: #3f3f46; color: #fafafa; }
 
 .wt-person-select .p-togglebutton,
 .wt-person-select .p-button {
@@ -715,4 +783,22 @@ a {
 .p-dark .wt-admin-table .p-button.p-button-danger.p-button-text:hover {
   background: rgba(225, 29, 72, 0.16);
   color: #fda4af;
+}
+
+.wt-data-table {
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.wt-data-table th, .wt-data-table td {
+  border-bottom: 1px solid #d1d5db;
+  padding: 0.4rem 0.65rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.p-dark .wt-data-table th, .p-dark .wt-data-table td {
+  border-color: #52525b;
 }

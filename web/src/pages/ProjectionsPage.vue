@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getProjections, getCategories, getAssets, ApiError } from '../api/client'
 import type { ProjectionsResponse, ProjectionScenario, Category, Asset } from '../types/index'
+import { visibleProjectionSeries as getVisibleProjectionSeries } from '../utils/projectionSeries'
 import ProjectionsChart from '../components/ProjectionsChart.vue'
 import ChartCard from '../components/ui/ChartCard.vue'
 import SelectButton from 'primevue/selectbutton'
@@ -21,10 +22,12 @@ const HORIZONS = [
 ]
 const horizon = ref(10)
 const customHorizonInput = ref('')
+const horizonError = ref('')
 
 function applyCustomHorizon() {
   const n = parseInt(customHorizonInput.value, 10)
-  if (!isNaN(n) && n >= 1 && n <= 30) horizon.value = n
+  if (/^\d+$/.test(customHorizonInput.value.trim()) && n >= 1 && n <= 30) { horizon.value = n; horizonError.value = '' }
+  else horizonError.value = 'Enter a whole number from 1 to 30.'
 }
 
 watch(horizon, (years) => {
@@ -33,9 +36,9 @@ watch(horizon, (years) => {
 
 // ── Scenario ──────────────────────────────────────────────────────────────────
 const SCENARIOS: { label: string; value: ProjectionScenario }[] = [
-  { label: 'Conservative', value: 'conservative' },
-  { label: 'Base',         value: 'base' },
-  { label: 'Aggressive',   value: 'aggressive' },
+  { label: '0.5× rates', value: 'conservative' },
+  { label: '1× rates', value: 'base' },
+  { label: '1.5× rates', value: 'aggressive' },
 ]
 const scenario = ref<ProjectionScenario>('base')
 
@@ -98,14 +101,36 @@ async function loadAssumptions(force = false) {
 const wealthCategories = computed(() =>
   categories.value.filter(c => c.type !== 'cash-inflow'),
 )
-// Assumption rows: one per wealth category, with asset overrides listed
 const assumptionRows = computed(() =>
-  wealthCategories.value.map(cat => {
-    const catAssets = assets.value.filter(a => a.category_id === cat.id)
-    const overrides = catAssets.filter(a => a.projected_yearly_growth !== null)
-    return { cat, overrides }
-  }),
+  wealthCategories.value.map(cat => ({
+    cat,
+    catAssets: assets.value.filter(asset => asset.category_id === cat.id &&
+      (!asset.closed_at || asset.closed_at >= (data.value?.projection.asOf ?? todayYM.value))),
+  })),
 )
+const rateMultiplier = computed(() => scenario.value === 'conservative' ? 0.5 : scenario.value === 'aggressive' ? 1.5 : 1)
+function effectiveRate(rate: number): number { return rate * rateMultiplier.value }
+function includeCurrent(asset: Asset, category: Category): boolean {
+  return asset.include_in_current_wealth ?? category.include_in_current_wealth ?? true
+}
+function includeProjection(asset: Asset, category: Category): boolean {
+  return asset.include_in_projections ?? category.include_in_projections ?? true
+}
+function projectionHint(asset: Asset, category: Category): string | null {
+  if (!includeProjection(asset, category)) return null
+  const metadata = data.value?.projection.asset_metadata?.find(item => item.asset_id === asset.id)
+  if (!metadata) return !includeCurrent(asset, category) ? 'Requires a future planned entry; current observations do not seed this projection.' : null
+  if (!metadata.projection_start_month) return !includeCurrent(asset, category)
+    ? 'No future planned entry. Current observations do not seed this projection.'
+    : 'No current observation or future planned entry to start a projection.'
+  if (!includeCurrent(asset, category)) {
+    const months = data.value?.projection.months ?? []
+    const lastMonth = months[months.length - 1]
+    const outside = lastMonth && metadata.projection_start_month > lastMonth ? ' (outside the selected horizon)' : ''
+    return `Starts ${metadata.projection_start_month}${outside}; current observations do not seed this projection.`
+  }
+  return null
+}
 
 // ── Category visibility ───────────────────────────────────────────────────────
 const hiddenCategories = ref<Set<string>>(new Set())
@@ -121,19 +146,27 @@ function showAll() { hiddenCategories.value = new Set() }
 // Effective hidden categories: user toggles + sensitivity toggle for liabilities
 const effectiveHidden = computed(() => {
   if (!excludeLiabilities.value) return hiddenCategories.value
-  const liabIds = new Set(
-    data.value?.historical.series
-      .filter(s => s.category_type === 'liability')
-      .map(s => s.category_id) ?? [],
-  )
+  const liabIds = new Set(categories.value.filter(category => category.type === 'liability').map(category => category.id))
   return new Set([...hiddenCategories.value, ...liabIds])
 })
 
 const anyHidden = computed(() => effectiveHidden.value.size > 0)
+const visibleProjectionSeries = computed(() => data.value ? getVisibleProjectionSeries(data.value, effectiveHidden.value) : [])
+const projectionTableRows = computed(() => {
+  if (!data.value) return []
+  return [
+    ...data.value.historical.months.map((month, index) => ({ month, phase: 'Historical', index })),
+    ...data.value.projection.months.map((month, index) => ({ month, phase: 'Projected', index })),
+  ]
+})
+function projectionTableValue(series: (typeof visibleProjectionSeries.value)[number], phase: string, index: number) {
+  return (phase === 'Historical' ? series.historical : series.projected)[index] ?? null
+}
+
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
-const pctFmt = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 1 })
+const pctFmt = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 4 })
 
 type CategoryBreakdownRow = ProjectionsResponse['historical']['category_breakdown'][number]
 type AssetBreakdownRow = ProjectionsResponse['historical']['asset_breakdown'][number]
@@ -165,15 +198,18 @@ onMounted(() => {
   loadAssumptions()
 })
 
+let projectionLoadSequence = 0
 async function loadProjections() {
+  const sequence = ++projectionLoadSequence
   loading.value = true
   error.value   = null
   try {
-    data.value = await getProjections(horizon.value, scenario.value)
+    const result = await getProjections(horizon.value, scenario.value)
+    if (sequence === projectionLoadSequence) data.value = result
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === projectionLoadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === projectionLoadSequence) loading.value = false
   }
 }
 
@@ -208,41 +244,24 @@ const MILESTONE_YEARS = [1, 3, 5, 10, 20, 30]
 const milestones = computed(() => {
   if (!data.value) return []
   const proj = data.value.projection
-  const allMonths = [...data.value.historical.months, ...proj.months]
-  const allTotals = [...data.value.historical.totals, ...proj.totals]
-
   return MILESTONE_YEARS
     .filter(y => y <= horizon.value)
     .map(years => {
       const targetYM = addYears(projectionAnchorYM.value, years)
-      const idx = allMonths.indexOf(targetYM)
+      const idx = proj.months.indexOf(targetYM)
+      const available = idx >= 0 && proj.available?.[idx] !== false
       return {
         label: `+${years}Y`,
         year: targetYM.slice(0, 4),
-        value: idx >= 0 ? fmt.format(allTotals[idx]) : 'N/A',
-        available: idx >= 0,
+        value: available ? fmt.format(proj.totals[idx]) : '—',
+        available,
       }
     })
 })
 
 // Custom milestone: user enters a target calendar year
 const customMilestoneYear = ref(String(defaultTargetYear.value))
-const customTargetYearInput = ref(String(defaultTargetYear.value))
-
-watch(defaultTargetYear, (year) => {
-  customMilestoneYear.value = String(year)
-  customTargetYearInput.value = String(year)
-}, { immediate: true })
-
-function applyCustomTargetYear() {
-  const targetYear = parseInt(customTargetYearInput.value, 10)
-  if (isNaN(targetYear)) return
-  const years = targetYear - projectionAnchorYear.value
-  if (years < 1 || years > 30) return
-  customMilestoneYear.value = String(targetYear)
-  customHorizonInput.value = String(years)
-  horizon.value = years
-}
+watch(defaultTargetYear, (year) => { customMilestoneYear.value = String(year) }, { immediate: true })
 
 const customMilestoneValue = computed(() => {
   if (!data.value || !customMilestoneYear.value) return null
@@ -251,11 +270,10 @@ const customMilestoneValue = computed(() => {
   const years = targetYear - projectionAnchorYear.value
   if (years < 1 || years > 30) return null
   const targetYM = addYears(projectionAnchorYM.value, years)
-  const allMonths = [...data.value.historical.months, ...data.value.projection.months]
-  const allTotals = [...data.value.historical.totals, ...data.value.projection.totals]
-  const idx = allMonths.indexOf(targetYM)
+  const projection = data.value.projection
+  const idx = projection.months.indexOf(targetYM)
   if (idx < 0) return 'Outside range — extend horizon'
-  return fmt.format(allTotals[idx])
+  return projection.available?.[idx] === false ? '—' : fmt.format(projection.totals[idx])
 })
 
 // ── Category breakdown (sidebar) ──────────────────────────────────────────────
@@ -312,6 +330,8 @@ const categoryBreakdownGroups = computed(() => {
                 max="30"
                 placeholder="10"
                 aria-label="Custom horizon in years"
+                :aria-invalid="!!horizonError"
+                :aria-errormessage="horizonError ? 'horizon-error' : undefined"
                 class="wt-number-input wt-ghost-number-input h-9 w-10 rounded-full bg-gray-50 px-1 text-center text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:ring-emerald-500/40"
                 @keydown.enter="applyCustomHorizon"
               />
@@ -324,30 +344,8 @@ const categoryBreakdownGroups = computed(() => {
                 Apply
               </button>
             </div>
-            <!-- Custom target year input -->
-            <div class="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-gray-600 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
-              <label for="custom-target-year" class="sr-only text-xs text-gray-500 dark:text-zinc-400">Custom projection target year</label>
-              <span class="text-xs font-medium text-gray-500 dark:text-zinc-400">Target year</span>
-              <input
-                id="custom-target-year"
-                v-model="customTargetYearInput"
-                type="number"
-                :min="projectionAnchorYear + 1"
-                :max="projectionAnchorYear + 30"
-                :placeholder="`${defaultTargetYear}`"
-                aria-label="Custom projection target year"
-                class="wt-number-input wt-ghost-number-input h-9 w-16 rounded-full bg-gray-50 px-2 text-center text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-200 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:ring-indigo-500/40"
-                @keydown.enter="applyCustomTargetYear"
-              />
-              <button
-                class="min-h-8 rounded-full bg-indigo-50 px-3 text-xs font-semibold text-indigo-700 transition-colors hover:bg-indigo-100 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 dark:focus-visible:ring-indigo-500/40"
-                aria-label="Apply custom projection year"
-                @click="applyCustomTargetYear"
-              >
-                Apply
-              </button>
-            </div>
           </div>
+          <p v-if="horizonError" id="horizon-error" role="alert" class="text-sm text-red-600">{{ horizonError }}</p>
           <!-- Chart type selector -->
           <SelectButton
             :model-value="chartType"
@@ -371,16 +369,17 @@ const categoryBreakdownGroups = computed(() => {
           </SelectButton>
         </div>
 
+        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">As of {{ data.projection.asOf }}. Values compound using the selected rates; planned future values anchor interpolation between observations. Income is not invested, and expenses, taxes and inflation are not modeled. These are estimates.</p>
         <!-- Row 2: Scenario selector -->
         <div class="flex flex-col sm:flex-row sm:items-center gap-2">
-          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Scenario</span>
+          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Rate sensitivity</span>
           <div class="wt-control-strip min-w-0 max-w-full" v-active-scroll>
             <SelectButton
               v-model="scenario"
               :options="SCENARIOS"
               option-label="label"
               option-value="value"
-              aria-label="Projection scenario"
+              aria-label="Projection rate sensitivity"
               class="whitespace-nowrap wt-touch-select wt-soft-select"
             />
           </div>
@@ -393,7 +392,7 @@ const categoryBreakdownGroups = computed(() => {
 
         <!-- Row 3: Sensitivity toggles -->
         <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Sensitivity</span>
+          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Chart visibility</span>
           <button
             :class="[
               'inline-flex items-center gap-1.5 min-h-10 px-3 text-xs font-medium rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 dark:focus-visible:ring-indigo-500/40 min-w-[44px]',
@@ -406,7 +405,7 @@ const categoryBreakdownGroups = computed(() => {
             @click="excludeLiabilities = !excludeLiabilities"
           >
             <span class="w-2 h-2 rounded-full" :class="excludeLiabilities ? 'bg-gray-300 dark:bg-zinc-600' : 'bg-rose-500'" />
-            {{ excludeLiabilities ? 'Liabilities hidden' : 'Liabilities shown' }}
+            {{ excludeLiabilities ? 'Liabilities hidden from chart' : 'Liabilities shown in chart' }}
           </button>
         </div>
       </div>
@@ -447,18 +446,18 @@ const categoryBreakdownGroups = computed(() => {
 
               <div
                 id="assumptions-panel"
-                class="wt-scrollbar-none max-h-[420px] overflow-y-auto px-4 pb-4"
+                class="px-4 pb-4 lg:max-h-[420px] lg:overflow-y-auto"
               >
                 <!-- Scenario reminder -->
                 <div class="text-xs text-gray-500 dark:text-zinc-400 mb-3 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-800/60">
                   <template v-if="scenario === 'conservative'">
-                    Conservative: displayed rates × 0.5 (half stored rates)
+                    Applied rates: 0.5× stored rates
                   </template>
                   <template v-else-if="scenario === 'aggressive'">
-                    Aggressive: displayed rates × 1.5 (1.5× stored rates)
+                    Applied rates: 1.5× stored rates
                   </template>
                   <template v-else>
-                    Base: rates as stored in Admin → Categories / Assets
+                    Applied rates as stored in Admin → Categories / Assets
                   </template>
                 </div>
 
@@ -474,7 +473,7 @@ const categoryBreakdownGroups = computed(() => {
 
                 <div v-else class="flex flex-col gap-3">
                   <div
-                    v-for="{ cat, overrides } in assumptionRows"
+                    v-for="{ cat, catAssets } in assumptionRows"
                     :key="cat.id"
                     class="text-xs"
                   >
@@ -494,31 +493,42 @@ const categoryBreakdownGroups = computed(() => {
                     >
                       <span class="flex min-w-0 items-center gap-1.5">
                         <span class="w-2 h-2 rounded-full flex-shrink-0" :style="{ backgroundColor: cat.color }" />
-                        <span :class="['truncate font-medium text-gray-700 dark:text-zinc-300', effectiveHidden.has(cat.id) ? 'line-through' : '']">
+                        <span :class="['break-words font-medium text-gray-700 dark:text-zinc-300', effectiveHidden.has(cat.id) ? 'line-through' : '']">
                           {{ cat.name }}
                         </span>
                       </span>
                       <span class="shrink-0 font-mono tabular-nums text-gray-900 dark:text-zinc-100">
-                        {{ pctFmt.format(cat.projected_yearly_growth) }}/yr
+                        {{ pctFmt.format(effectiveRate(cat.projected_yearly_growth)) }}/yr
                       </span>
                     </button>
-                    <!-- Asset-level overrides -->
+                    <p class="m-0 mt-1 text-gray-500 dark:text-zinc-400">Category defaults · Current wealth: {{ cat.include_in_current_wealth === false ? 'excluded' : 'included' }} · Projections: {{ cat.include_in_projections === false ? 'excluded' : 'included' }}</p>
                     <div
-                      v-for="asset in overrides"
+                      v-for="asset in catAssets"
                       :key="asset.id"
-                      class="flex items-center justify-between gap-2 pl-4 py-0.5 text-gray-500 dark:text-zinc-400"
+                      class="min-w-0 border-t border-gray-100 py-2 pl-4 dark:border-zinc-800"
                     >
-                      <span class="truncate">↳ {{ asset.name }}</span>
-                      <span class="shrink-0 font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
-                        {{ pctFmt.format(asset.projected_yearly_growth!) }}/yr
-                      </span>
+                      <p class="m-0 break-words font-medium leading-4 text-gray-700 dark:text-zinc-300">{{ asset.name }}</p>
+                      <p class="m-0 mt-1 text-gray-500 dark:text-zinc-400">
+                        {{ asset.projected_yearly_growth === null ? 'Category rate' : 'Asset override' }} ·
+                        <span class="font-semibold tabular-nums">{{ pctFmt.format(effectiveRate(asset.projected_yearly_growth ?? cat.projected_yearly_growth)) }}/yr</span>
+                      </p>
+                      <p v-if="asset.include_in_current_wealth != null || asset.include_in_projections != null" class="m-0 mt-1 text-gray-500 dark:text-zinc-400">Current wealth: {{ includeCurrent(asset, cat) ? 'included' : 'excluded' }} · Projections: {{ includeProjection(asset, cat) ? 'included' : 'excluded' }}</p>
+                      <p v-if="projectionHint(asset, cat)" class="m-0 mt-1 text-amber-700 dark:text-amber-300">{{ projectionHint(asset, cat) }}</p>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
+            <div class="min-w-0">
+            <details class="mb-3 text-sm"><summary class="cursor-pointer">View projection chart data</summary>
+              <div class="overflow-x-auto"><table class="wt-data-table"><caption class="sr-only">Historical and projected values for visible categories</caption>
+                <thead><tr><th scope="col">Month</th><th scope="col">Phase</th><th scope="col">Total</th><th v-for="series in visibleProjectionSeries" :key="series.id" scope="col">{{ series.name }}</th></tr></thead>
+                <tbody><tr v-for="row in projectionTableRows" :key="`${row.phase}-${row.month}`"><th scope="row">{{ row.month }}</th><td>{{ row.phase }}</td><td>{{ visibleProjectionSeries.some(series => projectionTableValue(series, row.phase, row.index) !== null) ? fmt.format(visibleProjectionSeries.reduce((sum, series) => sum + (projectionTableValue(series, row.phase, row.index) ?? 0), 0)) : '—' }}</td><td v-for="series in visibleProjectionSeries" :key="series.id">{{ projectionTableValue(series, row.phase, row.index) === null ? '—' : fmt.format(projectionTableValue(series, row.phase, row.index)!) }}</td></tr></tbody>
+              </table></div>
+            </details>
             <ChartCard title="Net Worth Projection">
+              <p v-if="data.projection.available && !data.projection.available.some(Boolean)" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">No projected values are available in this horizon.</p>
               <ProjectionsChart
                 :data="data"
                 :chart-type="chartType"
@@ -526,12 +536,13 @@ const categoryBreakdownGroups = computed(() => {
                 @point-click="onProjectionsPointClick"
               />
             </ChartCard>
+            </div>
           </div>
 
           <!-- ── Detail panels below chart ───────────────────────────────── -->
-          <div class="flex flex-col gap-3">
+          <div data-testid="current-category-breakdown" class="flex flex-col gap-3">
             <div class="flex items-center justify-between">
-              <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Category Breakdown</p>
+              <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Current category breakdown</p>
               <button
                 v-if="anyHidden"
                 class="text-xs text-indigo-500 hover:text-indigo-700 font-medium border-0 bg-transparent cursor-pointer p-0"
@@ -540,6 +551,8 @@ const categoryBreakdownGroups = computed(() => {
                 Show all
               </button>
             </div>
+
+            <p class="text-xs text-gray-500 dark:text-zinc-400">Only nonzero current balances are shown. Future-only assets appear from their planned dates within the selected horizon. Assets with no observations or planned entries contribute no value.</p>
 
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1fr)]">
               <div
@@ -676,7 +689,7 @@ const categoryBreakdownGroups = computed(() => {
                     </div>
                   </div>
                   <p class="mt-1.5 text-xs text-gray-400 dark:text-zinc-500">
-                    From latest data month {{ projectionAnchorYM }} · solid = historical · dashed = projected · planned values override growth
+                    As of {{ data.projection.asOf }} · solid = historical · dashed = projected · planned values override growth
                   </p>
                 </div>
               </div>
