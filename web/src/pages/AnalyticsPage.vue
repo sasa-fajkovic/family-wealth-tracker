@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import { hasObservation } from '../utils/observations'
+import SummaryDataTable from '../components/SummaryDataTable.vue'
+import ChartDataTable from '../components/ChartDataTable.vue'
 import { Line, Bar, Doughnut, PolarArea, Radar, Scatter, Bubble } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -37,6 +40,7 @@ import PlannedToggle from '../components/ui/PlannedToggle.vue'
 import { useTheme } from '../composables/useTheme'
 import { useDataRefresh } from '../composables/useDataRefresh'
 import { useShowPlanned } from '../composables/useShowPlanned'
+import { useSharedFilters } from '../composables/useSharedFilters'
 import { plannedBarColor, plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
 import { getChartTokens, buildTooltipDefaults, wealthColors } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
@@ -130,9 +134,8 @@ const RANGES: { label: string; value: RangeKey }[] = [
   { label: '10Y', value: '10y' }, { label: 'Max', value: 'max' },
 ]
 
-const range = ref<RangeKey>('3y')
+const { range, person } = useSharedFilters()
 const persons = ref<Person[]>([])
-const person = ref<string | null>(null)
 const contributorMode = ref<ContributorMode>('categories')
 const drilldownType = ref<DrilldownType>('asset')
 const selectedCategoryId = ref<string | null>(null)
@@ -166,7 +169,9 @@ onMounted(() => {
   loadPersons()
 })
 
+let loadSequence = 0
 async function loadData() {
+  const sequence = ++loadSequence
   loading.value = true
   error.value = null
   try {
@@ -178,13 +183,14 @@ async function loadData() {
       getSummary(range.value, personId, true),
       showPlanned.value ? getSummary(range.value, personId, false, true) : null,
     ])
+    if (sequence !== loadSequence) return
     data.value = wealth
     cashInflowData.value = cashInflow
     plannedData.value = planned
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === loadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -338,7 +344,7 @@ const trendData = computed((): ChartData<'line'> => {
     datasets: [
       {
         label: 'Net Worth',
-        data: timeline.value.totals,
+        data: timeline.value.totals.map((value, i) => hasObservation(timeline.value!, i) ? value : null),
         borderColor: t.totalLine,
         backgroundColor: t.totalLine + '33',
         fill: true,
@@ -495,7 +501,7 @@ const assetsVsLiabilitiesData = computed((): ChartData<'bar'> => {
   const datasets: ChartData<'bar'>['datasets'] = [
     {
       label: 'Gross Assets',
-      data: grossAssets,
+      data: grossAssets.map((value, i) => hasObservation(timeline.value!, i, undefined, 'asset') ? value : null),
       backgroundColor: plannedBarColor(wealthColors.assets.emerald, timelineToday.value, 'aa'),
       borderColor: plannedBarColor(wealthColors.assets.emerald, timelineToday.value, '', '66'),
       borderWidth: 1,
@@ -505,7 +511,7 @@ const assetsVsLiabilitiesData = computed((): ChartData<'bar'> => {
   if (liabilitySeries.length > 0) {
     datasets.push({
       label: 'Liabilities',
-      data: totalLiabilities,
+      data: totalLiabilities.map((value, i) => hasObservation(timeline.value!, i, undefined, 'liability') ? value : null),
       backgroundColor: plannedBarColor(wealthColors.liabilities.rose, timelineToday.value, 'aa'),
       borderColor: plannedBarColor(wealthColors.liabilities.rose, timelineToday.value, '', '66'),
       borderWidth: 1,
@@ -628,7 +634,7 @@ const mixedData = computed((): { labels: string[]; datasets: MixedDataset[] } =>
       {
         type: 'bar' as const,
         label: 'Net Worth',
-        data: netWorth,
+        data: netWorth.map((value, i) => hasObservation(timeline.value!, i) ? value : null),
         backgroundColor: plannedBarColor(t.totalLine, timelineToday.value, '66', '26'),
         borderColor: plannedBarColor(t.totalLine, timelineToday.value, '', '55'),
         borderWidth: 1,
@@ -637,7 +643,7 @@ const mixedData = computed((): { labels: string[]; datasets: MixedDataset[] } =>
       {
         type: 'line' as const,
         label: overlayLabel,
-        data: overlayData,
+        data: overlayData.map((value, i) => hasObservation(timeline.value!, i, undefined, hasCashInflowSeries.value ? 'cash-inflow' : 'asset') ? value : null),
         borderColor: overlayColor,
         backgroundColor: overlayColor + '22',
         fill: false,
@@ -907,6 +913,17 @@ function deltaClass(v: number) {
 function signedEur(v: number) {
   return (v >= 0 ? '+' : '\u2212') + eurFmt.format(Math.abs(v))
 }
+const allocationTableRows = computed(() => data.value?.category_breakdown.filter(row => row.category_type === 'asset' && row.value > 0).map(row => [row.category_name, eurFmt.format(row.value)]) ?? [])
+const contributorTableRows = computed(() => contributorRows.value.slice(0, contributorMode.value === 'assets' ? 12 : 8).map(row => [row.name, eurFmt.format(row.value)]))
+const polarTableRows = computed(() => polarCategories.value.map(row => [row.category_name, eurFmt.format(Math.abs(row.value))]))
+const radarTableRows = computed(() => (radarData.value.labels ?? []).map((label, index) => [String(label), `${radarData.value.datasets[0]?.data[index] ?? 0}%`]))
+const scatterTableRows = computed(() => scatterChartData.value.datasets.map(dataset => {
+  const point = dataset.data[0] as ScatterDataPoint | undefined
+  return [dataset.label ?? '', eurFmt.format(point?.x ?? 0), eurFmt.format(point?.y ?? 0)]
+}))
+const bubbleTableRows = computed(() => bubbleChartData.value.datasets.map(dataset => [dataset.label ?? '', eurFmt.format(dataset.data[0]?.x ?? 0), eurFmt.format(dataset.data[0]?.y ?? 0), String(dataset.data[0]?.r ?? 0)]))
+const comparisonTableRows = computed(() => (mixedData.value.labels ?? []).map((month, index) => [month, ...mixedData.value.datasets.map(dataset => dataset.data[index] == null ? '—' : eurFmt.format(Number(dataset.data[index])))]))
+const assetsLiabilityTableRows = computed(() => (assetsVsLiabilitiesData.value.labels ?? []).map((month, index) => [String(month), ...assetsVsLiabilitiesData.value.datasets.map(dataset => dataset.data[index] == null ? '—' : eurFmt.format(Number(dataset.data[index])))]))
 </script>
 
 <template>
@@ -955,24 +972,25 @@ function signedEur(v: number) {
       </template>
 
       <template v-else-if="data">
+        <SummaryDataTable :data="timeline ?? data" title="analytics timeline (all categories)" />
         <!-- Metric cards row -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Net Worth</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(data.current_total) }}</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ hasObservation(data, data.months.length - 1) ? eurFmt.format(data.current_total) : '—' }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Gross Assets</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(data.gross_assets) }}</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ hasObservation(data, data.months.length - 1, undefined, 'asset') ? eurFmt.format(data.gross_assets) : '—' }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Period Change</p>
-            <p :class="['text-lg font-bold tabular-nums', deltaClass(data.period_delta_abs)]">{{ signedEur(data.period_delta_abs) }}</p>
+            <p :class="['text-lg font-bold tabular-nums', deltaClass(data.period_delta_abs)]">{{ hasObservation(data, 0) && hasObservation(data, data.months.length - 1) ? signedEur(data.period_delta_abs) : '—' }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Monthly Change</p>
             <p :class="['text-lg font-bold tabular-nums', deltaClass(data.monthly_delta_abs)]">
-              {{ data.months.length >= 2 ? signedEur(data.monthly_delta_abs) : '—' }}
+              {{ data.months.length >= 2 && hasObservation(data, data.months.length - 2) && hasObservation(data, data.months.length - 1) ? signedEur(data.monthly_delta_abs) : '—' }}
             </p>
           </div>
         </div>
@@ -993,6 +1011,7 @@ function signedEur(v: number) {
               />
               <div v-else class="flex items-center justify-center h-full text-gray-400 dark:text-zinc-500 text-sm">No asset data</div>
             </div>
+            <ChartDataTable title="asset allocation" :columns="['Category', 'Value']" :rows="allocationTableRows" />
           </ChartCard>
         </div>
 
@@ -1022,28 +1041,12 @@ function signedEur(v: number) {
               />
               <div v-else class="flex items-center justify-center h-full text-gray-400 dark:text-zinc-500 text-sm">No data</div>
             </div>
-          </ChartCard>
-          <ChartCard :title="hasLiabilitySeries ? 'Assets vs Liabilities Over Time' : 'Gross Assets Over Time'">
-            <div class="h-[280px]">
-              <Bar :data="(assetsVsLiabilitiesData as ChartData<'bar'>)" :options="(assetsLiabilitiesOptions as ChartOptions<'bar'>)" />
-            </div>
+            <ChartDataTable title="top contributors" :columns="['Name', 'Current value']" :rows="contributorTableRows" />
           </ChartCard>
         </div>
 
         <!-- Row 3: Polar Area (conditional on 3+ categories) + Category Drilldown -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-          <ChartCard title="Current Value Distribution (Polar Area)">
-            <div class="h-[300px]">
-              <PolarArea
-                v-if="showPolar"
-                :data="(polarData as ChartData<'polarArea'>)"
-                :options="(polarOptions as ChartOptions<'polarArea'>)"
-              />
-              <div v-else class="flex h-full items-center justify-center text-sm text-gray-400 dark:text-zinc-500">
-                Not enough category data
-              </div>
-            </div>
-          </ChartCard>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm min-w-0">
             <div class="mb-3">
               <div class="flex flex-col gap-3">
@@ -1117,6 +1120,7 @@ function signedEur(v: number) {
                     <div class="min-w-0">
                       <p class="truncate text-sm font-medium text-gray-800 dark:text-zinc-200">{{ asset.asset_name }}</p>
                       <p class="text-xs text-gray-400 dark:text-zinc-500">{{ personName(asset.person_id) }}</p>
+                      <p class="text-xs text-gray-500 dark:text-zinc-400">{{ asset.observation_status === 'missing' ? 'No observation' : `${asset.observation_status === 'carried' ? 'Carried from' : 'Observed'} ${asset.observation_month}` }}</p>
                     </div>
                     <div class="text-right">
                       <p
@@ -1142,12 +1146,37 @@ function signedEur(v: number) {
           </div>
         </div>
 
+        <details class="mb-4"><summary class="cursor-pointer font-semibold mb-3">Explore more</summary>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <ChartCard title="Current Value Distribution (Polar Area)">
+            <div class="h-[300px]">
+              <PolarArea
+                v-if="showPolar"
+                :data="(polarData as ChartData<'polarArea'>)"
+                :options="(polarOptions as ChartOptions<'polarArea'>)"
+              />
+              <div v-else class="flex h-full items-center justify-center text-sm text-gray-400 dark:text-zinc-500">
+                Not enough category data
+              </div>
+            </div>
+            <ChartDataTable v-if="showPolar" title="current value distribution" :columns="['Category', 'Value']" :rows="polarTableRows" />
+          </ChartCard>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+          <ChartCard :title="hasLiabilitySeries ? 'Assets vs Liabilities Over Time' : 'Gross Assets Over Time'">
+            <div class="h-[280px]">
+              <Bar :data="(assetsVsLiabilitiesData as ChartData<'bar'>)" :options="(assetsLiabilitiesOptions as ChartOptions<'bar'>)" />
+            </div>
+            <ChartDataTable title="assets and liabilities" :columns="['Month', ...assetsVsLiabilitiesData.datasets.map(dataset => dataset.label ?? '')]" :rows="assetsLiabilityTableRows" />
+          </ChartCard>
+        </div>
         <!-- Row 4: Mixed Net Worth Bar+Line + Financial Profile Radar -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
           <ChartCard :title="`Net Worth vs. ${hasCashInflowSeries ? 'Income' : 'Gross Assets'} (Mixed)`">
             <div class="h-[280px]">
               <Bar :data="(mixedData as unknown as ChartData<'bar'>)" :options="(mixedOptions as ChartOptions<'bar'>)" />
             </div>
+            <ChartDataTable title="net worth comparison" :columns="['Month', ...mixedData.datasets.map(dataset => dataset.label ?? '')]" :rows="comparisonTableRows" />
           </ChartCard>
           <ChartCard title="Financial Profile Radar">
             <div class="h-[280px]">
@@ -1160,6 +1189,7 @@ function signedEur(v: number) {
                 Not enough data for radar
               </div>
             </div>
+            <ChartDataTable v-if="showRadar" title="financial profile" :columns="['Dimension', 'Share']" :rows="radarTableRows" />
           </ChartCard>
         </div>
 
@@ -1176,6 +1206,7 @@ function signedEur(v: number) {
                 Not enough data
               </div>
             </div>
+            <ChartDataTable v-if="showScatter" title="category performance" :columns="['Category', 'Current value', 'Period change']" :rows="scatterTableRows" />
           </ChartCard>
           <ChartCard title="Portfolio Bubble Map" subtitle="Value × monthly delta; bubble size = relative magnitude">
             <div class="h-[280px]">
@@ -1188,8 +1219,11 @@ function signedEur(v: number) {
                 Not enough data
               </div>
             </div>
+            <ChartDataTable v-if="showBubble" title="portfolio bubble map" :columns="['Category', 'Current value', 'Monthly change', 'Radius']" :rows="bubbleTableRows" />
           </ChartCard>
         </div>
+
+        </details>
 
         <!-- Empty state -->
         <div v-if="data.series.length === 0" class="text-center py-16 text-gray-400 dark:text-zinc-500">

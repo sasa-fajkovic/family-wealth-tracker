@@ -137,6 +137,10 @@ export function getDataPointsPage(params: DataPointsPageParams): Promise<DataPoi
   return apiFetch(`/data-points?${p.toString()}`)
 }
 
+export function getAllDataPoints(): Promise<DataPoint[]> {
+  return apiFetch<DataPoint[]>('/data-points')
+}
+
 /** Returns all data points for a single YYYY-MM month (no pagination). */
 export function getDataPointsForMonth(yearMonth: string): Promise<DataPoint[]> {
   return apiFetch<DataPoint[]>(`/data-points?year_month=${encodeURIComponent(yearMonth)}`)
@@ -230,6 +234,23 @@ export interface ImportConflict {
 }
 
 export type ImportTarget = 'database' | 'datapoints'
+
+export interface ImportPreview {
+  preview: true
+  counts: Record<string, number>
+  changes: Record<string, { added: number; replaced: number; removed: number }>
+  conflicts: { kind: string; ids: string[] }[]
+  orphans: { kind: string; ids: string[] }[]
+  needs_force: boolean
+}
+export async function previewImport(target: ImportTarget, file: File): Promise<ImportPreview> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(`${BASE}/import/${target}?preview=true`, { method: 'POST', body: fd })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new ApiError(res.status, (data as { error?: string }).error ?? res.statusText)
+  return data as ImportPreview
+}
 
 export async function importFile(target: ImportTarget, file: File, force = false): Promise<ImportSuccess | ImportConflict> {
   const fd = new FormData()

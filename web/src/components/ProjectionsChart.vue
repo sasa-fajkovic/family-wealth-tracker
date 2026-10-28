@@ -22,6 +22,7 @@ import {
 } from 'chart.js'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
 import type { ProjectionsResponse } from '../types/index'
+import { hasObservation } from '../utils/observations'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
@@ -73,7 +74,7 @@ const mergedSeries = computed(() => {
       category_id: hs.category_id,
       category_name: hs.category_name,
       color: hs.color,
-      histValues: hs.values,
+      histValues: hs.values.map((value, i) => hasObservation(props.data.historical, i, hs.category_id) ? value : null),
       projValues: ps?.values ?? Array(props.data.projection.months.length).fill(0),
     }
   })
@@ -82,10 +83,9 @@ const mergedSeries = computed(() => {
 // When categories are hidden, recompute totals for visible series only.
 // This keeps the "Total" line consistent with what's actually shown in the chart.
 const adjustedHistTotals = computed(() => {
-  if (props.hiddenCategories.size === 0) return props.data.historical.totals
   const len = props.data.historical.months.length
   return Array.from({ length: len }, (_, i) =>
-    mergedSeries.value.reduce((sum, s) => sum + (s.histValues[i] ?? 0), 0),
+    mergedSeries.value.some(s => s.histValues[i] !== null) ? mergedSeries.value.reduce((sum, s) => sum + (s.histValues[i] ?? 0), 0) : null,
   )
 })
 
@@ -167,7 +167,7 @@ function buildNullPaddedDatasets(
   }
 
   for (const s of mergedSeries.value) {
-    const negative = [...s.histValues, ...s.projValues].reduce((a, v) => a + v, 0) < 0
+    const negative = [...s.histValues, ...s.projValues].reduce<number>((a, v) => a + (v ?? 0), 0) < 0
     // Historical dataset: actual values then nulls
     const histPad = Array(projLen).fill(null)
     const histData = [...s.histValues, ...histPad]

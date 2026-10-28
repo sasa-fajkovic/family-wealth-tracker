@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getProjections, getCategories, getAssets, ApiError } from '../api/client'
 import type { ProjectionsResponse, ProjectionScenario, Category, Asset } from '../types/index'
+import { hasObservation } from '../utils/observations'
 import ProjectionsChart from '../components/ProjectionsChart.vue'
 import ChartCard from '../components/ui/ChartCard.vue'
 import SelectButton from 'primevue/selectbutton'
@@ -21,10 +22,12 @@ const HORIZONS = [
 ]
 const horizon = ref(10)
 const customHorizonInput = ref('')
+const horizonError = ref('')
 
 function applyCustomHorizon() {
   const n = parseInt(customHorizonInput.value, 10)
-  if (!isNaN(n) && n >= 1 && n <= 30) horizon.value = n
+  if (/^\d+$/.test(customHorizonInput.value.trim()) && n >= 1 && n <= 30) { horizon.value = n; horizonError.value = '' }
+  else horizonError.value = 'Enter a whole number from 1 to 30.'
 }
 
 watch(horizon, (years) => {
@@ -33,9 +36,9 @@ watch(horizon, (years) => {
 
 // ── Scenario ──────────────────────────────────────────────────────────────────
 const SCENARIOS: { label: string; value: ProjectionScenario }[] = [
-  { label: 'Conservative', value: 'conservative' },
-  { label: 'Base',         value: 'base' },
-  { label: 'Aggressive',   value: 'aggressive' },
+  { label: '0.5× rates', value: 'conservative' },
+  { label: '1× rates', value: 'base' },
+  { label: '1.5× rates', value: 'aggressive' },
 ]
 const scenario = ref<ProjectionScenario>('base')
 
@@ -130,6 +133,26 @@ const effectiveHidden = computed(() => {
 })
 
 const anyHidden = computed(() => effectiveHidden.value.size > 0)
+const visibleProjectionSeries = computed(() => data.value?.historical.series
+  .filter(series => !effectiveHidden.value.has(series.category_id))
+  .map(series => ({
+    id: series.category_id,
+    name: series.category_name,
+    historical: series.values,
+    projected: data.value?.projection.series.find(item => item.category_id === series.category_id)?.values ?? [],
+  })) ?? [])
+const projectionTableRows = computed(() => {
+  if (!data.value) return []
+  return [
+    ...data.value.historical.months.map((month, index) => ({ month, phase: 'Historical', index })),
+    ...data.value.projection.months.map((month, index) => ({ month, phase: 'Projected', index })),
+  ]
+})
+function projectionTableValue(series: (typeof visibleProjectionSeries.value)[number], phase: string, index: number) {
+  if (phase === 'Historical' && data.value && !hasObservation(data.value.historical, index, series.id)) return null
+  return (phase === 'Historical' ? series.historical : series.projected)[index] ?? 0
+}
+
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
@@ -165,15 +188,18 @@ onMounted(() => {
   loadAssumptions()
 })
 
+let projectionLoadSequence = 0
 async function loadProjections() {
+  const sequence = ++projectionLoadSequence
   loading.value = true
   error.value   = null
   try {
-    data.value = await getProjections(horizon.value, scenario.value)
+    const result = await getProjections(horizon.value, scenario.value)
+    if (sequence === projectionLoadSequence) data.value = result
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === projectionLoadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === projectionLoadSequence) loading.value = false
   }
 }
 
@@ -227,22 +253,7 @@ const milestones = computed(() => {
 
 // Custom milestone: user enters a target calendar year
 const customMilestoneYear = ref(String(defaultTargetYear.value))
-const customTargetYearInput = ref(String(defaultTargetYear.value))
-
-watch(defaultTargetYear, (year) => {
-  customMilestoneYear.value = String(year)
-  customTargetYearInput.value = String(year)
-}, { immediate: true })
-
-function applyCustomTargetYear() {
-  const targetYear = parseInt(customTargetYearInput.value, 10)
-  if (isNaN(targetYear)) return
-  const years = targetYear - projectionAnchorYear.value
-  if (years < 1 || years > 30) return
-  customMilestoneYear.value = String(targetYear)
-  customHorizonInput.value = String(years)
-  horizon.value = years
-}
+watch(defaultTargetYear, (year) => { customMilestoneYear.value = String(year) }, { immediate: true })
 
 const customMilestoneValue = computed(() => {
   if (!data.value || !customMilestoneYear.value) return null
@@ -312,6 +323,8 @@ const categoryBreakdownGroups = computed(() => {
                 max="30"
                 placeholder="10"
                 aria-label="Custom horizon in years"
+                :aria-invalid="!!horizonError"
+                :aria-errormessage="horizonError ? 'horizon-error' : undefined"
                 class="wt-number-input wt-ghost-number-input h-9 w-10 rounded-full bg-gray-50 px-1 text-center text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-200 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:ring-emerald-500/40"
                 @keydown.enter="applyCustomHorizon"
               />
@@ -324,30 +337,8 @@ const categoryBreakdownGroups = computed(() => {
                 Apply
               </button>
             </div>
-            <!-- Custom target year input -->
-            <div class="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 text-gray-600 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
-              <label for="custom-target-year" class="sr-only text-xs text-gray-500 dark:text-zinc-400">Custom projection target year</label>
-              <span class="text-xs font-medium text-gray-500 dark:text-zinc-400">Target year</span>
-              <input
-                id="custom-target-year"
-                v-model="customTargetYearInput"
-                type="number"
-                :min="projectionAnchorYear + 1"
-                :max="projectionAnchorYear + 30"
-                :placeholder="`${defaultTargetYear}`"
-                aria-label="Custom projection target year"
-                class="wt-number-input wt-ghost-number-input h-9 w-16 rounded-full bg-gray-50 px-2 text-center text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-200 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:ring-indigo-500/40"
-                @keydown.enter="applyCustomTargetYear"
-              />
-              <button
-                class="min-h-8 rounded-full bg-indigo-50 px-3 text-xs font-semibold text-indigo-700 transition-colors hover:bg-indigo-100 focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-900/50 dark:focus-visible:ring-indigo-500/40"
-                aria-label="Apply custom projection year"
-                @click="applyCustomTargetYear"
-              >
-                Apply
-              </button>
-            </div>
           </div>
+          <p v-if="horizonError" id="horizon-error" role="alert" class="text-sm text-red-600">{{ horizonError }}</p>
           <!-- Chart type selector -->
           <SelectButton
             :model-value="chartType"
@@ -371,16 +362,17 @@ const categoryBreakdownGroups = computed(() => {
           </SelectButton>
         </div>
 
+        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">As of {{ data.projection.asOf }}. Values compound using the selected rates; planned future values anchor interpolation between observations. Income is not invested, and expenses, taxes and inflation are not modeled. These are estimates.</p>
         <!-- Row 2: Scenario selector -->
         <div class="flex flex-col sm:flex-row sm:items-center gap-2">
-          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Scenario</span>
+          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Rate sensitivity</span>
           <div class="wt-control-strip min-w-0 max-w-full" v-active-scroll>
             <SelectButton
               v-model="scenario"
               :options="SCENARIOS"
               option-label="label"
               option-value="value"
-              aria-label="Projection scenario"
+              aria-label="Projection rate sensitivity"
               class="whitespace-nowrap wt-touch-select wt-soft-select"
             />
           </div>
@@ -393,7 +385,7 @@ const categoryBreakdownGroups = computed(() => {
 
         <!-- Row 3: Sensitivity toggles -->
         <div class="flex flex-wrap items-center gap-2">
-          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Sensitivity</span>
+          <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Chart visibility</span>
           <button
             :class="[
               'inline-flex items-center gap-1.5 min-h-10 px-3 text-xs font-medium rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-200 dark:focus-visible:ring-indigo-500/40 min-w-[44px]',
@@ -406,7 +398,7 @@ const categoryBreakdownGroups = computed(() => {
             @click="excludeLiabilities = !excludeLiabilities"
           >
             <span class="w-2 h-2 rounded-full" :class="excludeLiabilities ? 'bg-gray-300 dark:bg-zinc-600' : 'bg-rose-500'" />
-            {{ excludeLiabilities ? 'Liabilities hidden' : 'Liabilities shown' }}
+            {{ excludeLiabilities ? 'Liabilities hidden from chart' : 'Liabilities shown in chart' }}
           </button>
         </div>
       </div>
@@ -452,13 +444,13 @@ const categoryBreakdownGroups = computed(() => {
                 <!-- Scenario reminder -->
                 <div class="text-xs text-gray-500 dark:text-zinc-400 mb-3 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-800/60">
                   <template v-if="scenario === 'conservative'">
-                    Conservative: displayed rates × 0.5 (half stored rates)
+                    Displayed rates × 0.5 (half stored rates)
                   </template>
                   <template v-else-if="scenario === 'aggressive'">
-                    Aggressive: displayed rates × 1.5 (1.5× stored rates)
+                    Displayed rates × 1.5 (1.5× stored rates)
                   </template>
                   <template v-else>
-                    Base: rates as stored in Admin → Categories / Assets
+                    Rates as stored in Admin → Categories / Assets
                   </template>
                 </div>
 
@@ -518,6 +510,13 @@ const categoryBreakdownGroups = computed(() => {
               </div>
             </div>
 
+            <div class="min-w-0">
+            <details class="mb-3 text-sm"><summary class="cursor-pointer">View projection chart data</summary>
+              <div class="overflow-x-auto"><table class="wt-data-table"><caption class="sr-only">Historical and projected values for visible categories</caption>
+                <thead><tr><th scope="col">Month</th><th scope="col">Phase</th><th scope="col">Total</th><th v-for="series in visibleProjectionSeries" :key="series.id" scope="col">{{ series.name }}</th></tr></thead>
+                <tbody><tr v-for="row in projectionTableRows" :key="`${row.phase}-${row.month}`"><th scope="row">{{ row.month }}</th><td>{{ row.phase }}</td><td>{{ visibleProjectionSeries.some(series => projectionTableValue(series, row.phase, row.index) !== null) ? fmt.format(visibleProjectionSeries.reduce((sum, series) => sum + (projectionTableValue(series, row.phase, row.index) ?? 0), 0)) : '—' }}</td><td v-for="series in visibleProjectionSeries" :key="series.id">{{ projectionTableValue(series, row.phase, row.index) === null ? '—' : fmt.format(projectionTableValue(series, row.phase, row.index)!) }}</td></tr></tbody>
+              </table></div>
+            </details>
             <ChartCard title="Net Worth Projection">
               <ProjectionsChart
                 :data="data"
@@ -526,6 +525,7 @@ const categoryBreakdownGroups = computed(() => {
                 @point-click="onProjectionsPointClick"
               />
             </ChartCard>
+            </div>
           </div>
 
           <!-- ── Detail panels below chart ───────────────────────────────── -->
@@ -676,7 +676,7 @@ const categoryBreakdownGroups = computed(() => {
                     </div>
                   </div>
                   <p class="mt-1.5 text-xs text-gray-400 dark:text-zinc-500">
-                    From latest data month {{ projectionAnchorYM }} · solid = historical · dashed = projected · planned values override growth
+                    As of {{ data.projection.asOf }} · solid = historical · dashed = projected · planned values override growth
                   </p>
                 </div>
               </div>

@@ -22,6 +22,7 @@ import {
 import ChartDataLabels from 'chartjs-plugin-datalabels'
 import type { Context as DatalabelsContext } from 'chartjs-plugin-datalabels'
 import type { SummaryResponse } from '../types/index'
+import { hasObservation } from '../utils/observations'
 import type { ChartType } from '../composables/useChartType'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
@@ -114,7 +115,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       labels: labels.value,
       datasets: [{
         label: 'Total Income',
-        data: displayedTotals.value,
+        data: displayedTotals.value.map((value, i) => hasObservation(props.data, i) ? value : null),
         borderColor: color,
         backgroundColor: color + '22',
         fill: true,
@@ -132,7 +133,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       labels: labels.value,
       datasets: series.map(s => ({
         label: s.category_name,
-        data: s.values,
+        data: s.values.map((value, i) => hasObservation(props.data, i, s.category_id) ? value : null),
         backgroundColor: plannedBarColor(s.color, today.value),
         borderColor: plannedBarColor(s.color, today.value, '', '88'),
         borderWidth: 1,
@@ -144,7 +145,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
 
   const datasets: ChartData<'line'>['datasets'] = series.map(s => ({
     label: s.category_name,
-    data: s.values,
+    data: s.values.map((value, i) => hasObservation(props.data, i, s.category_id) ? value : null),
     borderColor: s.color,
     backgroundColor: isArea ? s.color + '99' : s.color,
     fill: isArea,
@@ -162,7 +163,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
     const t = getChartTokens(theme.value === 'dark')
     datasets.push({
       label: 'Total',
-      data: displayedTotals.value,
+      data: displayedTotals.value.map((value, i) => hasObservation(props.data, i) ? value : null),
       borderColor: t.totalLine,
       backgroundColor: 'transparent',
       fill: false,
@@ -179,7 +180,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
 })
 
 const pieData = computed((): ChartData<'pie'> => {
-  const series = visibleSeries.value
+  const series = visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id))
   const values = series.map(s => Math.max(0, s.values[today.value] ?? 0))
   return {
     labels: series.map(s => s.category_name),
@@ -207,9 +208,11 @@ const pieOptions = computed((): ChartOptions<'pie'> => {
       if (hits.length === 0) return
       const sliceIndex = hits[0].index
       const label = chart.data.labels?.[sliceIndex]
+      const pieSeries = visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id))
+      const originalIndex = visibleSeries.value.indexOf(pieSeries[sliceIndex])
       emit('point-click', {
         monthIndex: lastMonthIndex,
-        datasetIndex: sliceIndex,
+        datasetIndex: originalIndex,
         datasetLabel: typeof label === 'string' ? label : '',
       })
     },
@@ -381,4 +384,10 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
       :options="(chartOptions as ChartOptions<'line'>)"
     />
   </div>
+  <details v-if="chartType === 'pie'" class="mt-3"><summary class="cursor-pointer text-sm">View pie chart data</summary>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Pie chart values</caption><thead><tr><th scope="col">Category</th><th scope="col">Value</th></tr></thead><tbody><tr v-for="series in visibleSeries" :key="series.category_id"><th scope="row">{{ series.category_name }}</th><td>{{ hasObservation(data, today, series.category_id) ? eurFmt.format(Math.max(0, series.values[today] ?? 0)) : '—' }}</td></tr></tbody></table></div>
+  </details>
+  <details class="mt-3"><summary class="cursor-pointer text-sm">View chart data</summary>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Chart values by month</caption><thead><tr><th scope="col">Month</th><th scope="col">Phase</th><th v-for="series in visibleSeries" :key="series.category_id" scope="col">{{ series.category_name }}</th></tr></thead><tbody><tr v-for="(month, i) in data.months" :key="month"><th scope="row">{{ month }}</th><td>{{ data.current_month && month.slice(0, 7) > data.current_month ? 'Planned' : 'Actual' }}</td><td v-for="series in visibleSeries" :key="series.category_id">{{ hasObservation(data, i, series.category_id) ? eurFmt.format(series.values[i] ?? 0) : '—' }}</td></tr></tbody></table></div>
+  </details>
 </template>

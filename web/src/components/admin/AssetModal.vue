@@ -95,7 +95,6 @@ function handleSubmit() {
   const storedRate = rateInput.value !== null ? rateInput.value / 100 : null
   if (props.mode === 'create') {
     props.onSave({
-      id: slugPreview.value,
       name: name.value.trim(),
       category_id: categoryId.value,
       projected_yearly_growth: storedRate,
@@ -109,7 +108,7 @@ function handleSubmit() {
       name: name.value.trim(),
       category_id: categoryId.value,
       projected_yearly_growth: storedRate,
-      notes: notes.value.trim() || undefined,
+      notes: notes.value.trim(),
       person_id: personId.value,
       show_from: from || null,
       show_until: until || null,

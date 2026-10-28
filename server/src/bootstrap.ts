@@ -2,8 +2,9 @@ import { access, mkdir, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { parse, stringify } from 'yaml'
 import writeFileAtomic from 'write-file-atomic'
-import { DB_PATH, CSV_PATH } from './storage/index.js'
-import { encodeDataPoints } from './storage/csv.js'
+import { DB_PATH, CSV_PATH, recoverPendingTransaction, mutateDbAndDataPoints } from './storage/index.js'
+import { decodeDataPoints, encodeDataPoints } from './storage/csv.js'
+import { validateDatabase, validatePoints, duplicateKeys, ValidationError } from './models/validation.js'
 import { SEED_CATEGORIES } from './models/seed.js'
 import type { Database, Category, DataPoint } from './models/index.js'
 import { auditLog } from './audit/index.js'
@@ -18,6 +19,7 @@ type LegacyDatabase = Omit<Database, 'categories'> & {
 }
 
 export async function bootstrapDatabase(): Promise<void> {
+  await recoverPendingTransaction()
   // Check if the database file already exists
   let fileExists = true
   try {
@@ -44,6 +46,11 @@ export async function bootstrapDatabase(): Promise<void> {
   }
 
   if (!fileExists) {
+    const csv = await readFile(CSV_PATH, 'utf8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
+      throw error
+    })
+    if (decodeDataPoints(csv).length) throw new Error('Database configuration is missing while data points exist; restore database.yaml before startup')
     // First run — create the directory (e.g. /data might not exist in dev) and write seed data
     await mkdir(dirname(DB_PATH), { recursive: true })
     const initial: Database = {
@@ -65,49 +72,43 @@ export async function bootstrapDatabase(): Promise<void> {
   try {
     parse(raw)
   } catch (err) {
-    console.error(
-      `Error: Failed to parse database at ${DB_PATH}: ${(err as Error).message}`,
-    )
-    process.exit(1)
+    throw new Error(`Failed to parse database at ${DB_PATH}: ${(err as Error).message}`)
   }
 
-  // Data points migration: move dataPoints from YAML to datapoints.csv (one-time, idempotent).
-  // If YAML still has dataPoints, YAML is authoritative — overwrite CSV from YAML, then strip.
-  // Recovery: if a previous boot crashed between writing CSV and stripping YAML, YAML still has
-  // dataPoints, so we overwrite CSV again (safe: YAML is always the authoritative source here).
-  let current = parse(raw) as LegacyDatabase
-  if (current.dataPoints !== undefined) {
-    const { dataPoints, ...withoutDataPoints } = current
-    if (dataPoints.length > 0) {
-      await mkdir(dirname(CSV_PATH), { recursive: true })
-      await writeFileAtomic(CSV_PATH, encodeDataPoints(dataPoints))
-      console.log(`Migrated ${dataPoints.length} data points from YAML to CSV at ${CSV_PATH}`)
-      await auditLog('database.migrate', {
-        data_points_migrated: dataPoints.length,
-        csv_path: CSV_PATH,
-      })
+  const current = parse(raw) as LegacyDatabase
+  if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('Database root must be an object')
+  if (current.dataPoints !== undefined && !Array.isArray(current.dataPoints)) throw new Error('Legacy dataPoints must be an array')
+  const { dataPoints: legacyPoints, ...config } = current
+  if (!Array.isArray(config.categories)) throw new ValidationError([{ field: 'categories', message: 'Expected an array' }])
+  const categories = config.categories.map((cat, index) => {
+    if (!cat || typeof cat !== 'object' || Array.isArray(cat)) throw new ValidationError([{ field: `categories.${index}`, message: 'Expected an object' }])
+    if (cat.track_only !== undefined && typeof cat.track_only !== 'boolean') throw new Error('Legacy track_only must be boolean')
+    const { track_only, ...rest } = cat
+    return { ...rest, type: cat.type === undefined ? (track_only ? 'cash-inflow' : 'asset') : cat.type }
+  })
+  const db = validateDatabase({ ...config, categories })
+  const csvRaw = await readFile(CSV_PATH, 'utf8').catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''
+    throw error
+  })
+  const csvPoints = decodeDataPoints(csvRaw)
+  const points = legacyPoints ?? csvPoints
+  validatePoints(points, db, true)
+  if (legacyPoints !== undefined && csvPoints.length) {
+    const canonical = (records: DataPoint[]) => encodeDataPoints([...records].sort((a, b) => a.id.localeCompare(b.id)))
+    if (canonical(legacyPoints) !== canonical(csvPoints)) {
+      throw new Error('Legacy YAML dataPoints conflict with existing datapoints.csv; preserve both files and reconcile them explicitly before startup')
     }
-    // Strip dataPoints from YAML regardless (even if empty array) to finalize migration
-    await writeFileAtomic(DB_PATH, stringify(withoutDataPoints, { lineWidth: 0 }))
-    current = withoutDataPoints
   }
-
-  // Category type migration (M-02): backfill `type` field for old records that only have
-  // `track_only`. Idempotent — skipped when all categories already have `type`.
-  const needsMigration = current.categories?.some(cat => cat.type === undefined) ?? false
-  if (needsMigration) {
-    const migrated: Category[] = current.categories.map(cat => {
-      const { track_only, ...rest } = cat
-      return {
-        ...rest,
-        type: cat.type ?? (track_only ? 'cash-inflow' : 'asset'),
-      }
+  const duplicates = duplicateKeys(points)
+  const orphanCount = points.filter(point => !db.assets.some(asset => asset.id === point.asset_id)).length
+  if (duplicates.length || orphanCount) {
+    console.warn(`Compatibility report: ${duplicates.length} duplicate asset/month keys, ${orphanCount} orphan data points. Existing records were preserved; repair explicitly before editing conflicts.`)
+    await auditLog('database.compatibility', { duplicate_keys: duplicates.length, orphan_data_points: orphanCount })
+  }
+  if (legacyPoints !== undefined || current.categories.some(category => category.type === undefined || 'track_only' in category)) {
+    await mutateDbAndDataPoints(() => ({ db, points }), {
+      action: 'database.migrate', meta: { data_points_migrated: legacyPoints?.length ?? 0 },
     })
-    const updated: Database = { ...current, categories: migrated }
-    delete (updated as { dataPoints?: unknown }).dataPoints
-    await writeFileAtomic(DB_PATH, stringify(updated, { lineWidth: 0 }))
-    const count = current.categories.filter(cat => cat.type === undefined).length
-    console.log(`Backfilled category type on ${count} old record(s) in ${DB_PATH}`)
-    await auditLog('database.migrate_category_type', { backfilled: count })
   }
 }

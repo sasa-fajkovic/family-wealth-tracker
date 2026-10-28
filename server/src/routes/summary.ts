@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { readDbAndDataPoints } from '../storage/index.js'
 import { monthRange } from '../calc/utils.js'
 import { getRangeBounds } from '../calc/ranges.js'
-import { locfFill, aggregateSummary } from '../calc/summary.js'
+import { locfFill, aggregateSummary, observationCoverage } from '../calc/summary.js'
 import { deriveMonthBounds } from '../util/monthBounds.js'
 import { zodErrorHook as hook } from '../util/zodHook.js'
 
@@ -45,12 +45,15 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   const months = monthRange(startYM, endYM)
   const fillMode = trackingMode ? 'flow' : 'stock'
   const locfData = locfFill(months, dataPoints, filteredAssets, fillMode)
-  const response = { ...aggregateSummary(filteredAssets, relevantCategories, locfData, months, fillMode), current_month: endYM }
+  const monthlyAssets = db.assets.filter(asset => (!person || asset.person_id === person)
+    && (!asset.show_from || asset.show_from <= currentMonth) && (!asset.show_until || asset.show_until >= currentMonth))
+  const monthly_coverage = observationCoverage(monthlyAssets, db.categories, dataPoints, currentMonth)
+  const response = { monthly_coverage, ...aggregateSummary(filteredAssets, relevantCategories, locfData, months, fillMode, dataPoints), current_month: endYM }
 
   if (planned === 'true' && latestMonth > endYM) {
     // Headline numbers and breakdowns stay as of today; only the timelines extend into planned months.
     const plannedMonths = monthRange(startYM, latestMonth)
-    const ext = aggregateSummary(filteredAssets, relevantCategories, locfFill(plannedMonths, dataPoints, filteredAssets, fillMode), plannedMonths, fillMode)
+    const ext = aggregateSummary(filteredAssets, relevantCategories, locfFill(plannedMonths, dataPoints, filteredAssets, fillMode), plannedMonths, fillMode, dataPoints)
     Object.assign(response, { months: ext.months, series: ext.series, totals: ext.totals, asset_series: ext.asset_series })
   }
 

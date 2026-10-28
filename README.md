@@ -73,7 +73,7 @@ chown -R 1000:1000 /path/to/data
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 24 recommended (supported: 20.19+ on Node 20, or 22.12+)
 - npm
 
 ### Install dependencies
@@ -90,6 +90,24 @@ make dev
 
 This starts the Hono API server on **:3000** and the Vite dev server on **:5173**.  
 Open [http://localhost:5173](http://localhost:5173).
+
+### Verify changes locally
+
+```bash
+npm --prefix server test
+npm --prefix server run typecheck
+npm --prefix server run lint
+npm --prefix web run typecheck
+npm --prefix web run lint
+npm --prefix web run test:harness
+npm --prefix web run test:e2e
+make build
+```
+
+The browser suite creates disposable local data and starts its own production
+server. It performs writes: never point it at your real data. To test an
+already-running local server with disposable data, set `BASE_URL` to its loopback
+origin and `E2E_ALLOW_SYNTHETIC_DATA=1`. Remote targets are rejected.
 
 ### Build for production
 
@@ -129,9 +147,11 @@ All persistent data lives in `/data` inside the container (mounted as a Docker v
 
 | File | Description |
 |---|---|
-| `database.yaml` | Net worth snapshots by month and category |
+| `database.yaml` | Categories, people, assets, growth assumptions and visibility windows |
 | `datapoints.csv` | Granular data point entries |
-| `logs/` | Audit log of all mutations |
+| `logs/` | Audit log of mutations |
+| `snapshots/` | Prior file versions retained before writes |
+| `database.yaml.transaction.json` | Temporary durable journal for paired YAML/CSV updates; recovered before serving requests |
 
 ## Environment variables
 
@@ -167,7 +187,6 @@ assets:
     category_id: stocks
     person_id: alice
     projected_yearly_growth: null    # null = inherit from category; 0 is a valid override
-    location: Vanguard               # optional
     notes: ''                        # optional
     created_at: 2024-01-15T10:00:00Z
 ```
@@ -188,10 +207,33 @@ assets:
 - A single global mutex (`server/src/storage/mutex.ts`) serialises all
   reads and writes — concurrent requests are safe.
 - Projection growth uses `(1+r)^(1/12) - 1` (compound monthly), not `r/12`.
-- Projections start at the current month. Future-dated data points (planned
-  values) replace the grown value in their month; growth resumes from them.
+- Projections use balances carried forward to the current month and start next
+  month. Planned balances are used exactly; intermediate months interpolate
+  linearly between known balances. Compound growth resumes after the last plan.
+  Future-only assets remain zero until their first planned month.
 - `asset.projected_yearly_growth !== null` overrides the category default.
   `0` is a valid override; do not check with truthiness.
+
+## Observation and import behavior
+
+Balances carry forward until the next recorded observation. Income does not:
+missing months contribute no recorded income. The interface distinguishes missing
+observations from explicitly entered zeroes. Income averages use observed months,
+including recorded zero and negative amounts, and exclude future planned months.
+Monthly completion covers items visible in the selected month, including income;
+visibility windows do not remove historical balances from net worth.
+
+Imports must pass validation before application. Preview shows counts and
+conflicts without replacing data. Conflicting duplicate observations require
+explicit repair. Omitting notes when updating a value preserves existing notes;
+an explicit empty string clears them. Startup refuses malformed data rather than
+reinitializing it, and reports existing duplicate keys and orphan observations.
+
+Back up `database.yaml` and `datapoints.csv` as a consistent pair while the app is
+stopped. Restore them together with the app stopped. An interrupted paired write
+is recovered from its transaction journal before requests are served; a damaged
+journal or unexpected file edits stop recovery for manual inspection. Preserve
+the journal and both files when diagnosing recovery failures.
 
 ## License
 

@@ -32,6 +32,7 @@ function currentMonthKey(): string {
  * @returns           Monthly compound rate, e.g. ≈0.006434 for 8% annual
  */
 export function compoundMonthlyRate(annualRate: number): number {
+  if (!Number.isFinite(annualRate) || annualRate < -1) throw new RangeError('Effective annual growth must be finite and at least -100%')
   return Math.pow(1 + annualRate, 1 / 12) - 1
 }
 
@@ -67,6 +68,8 @@ export interface ProjectionSeries {
 }
 
 export interface ProjectionBlock {
+  asOf: string
+  method: 'compound-growth-with-planned-interpolation'
   months: string[]
   series: ProjectionSeries[]
   totals: number[]
@@ -77,8 +80,7 @@ export interface ProjectionBlock {
 /**
  * Build a compound-growth projection for years * 12 months.
  *
- * PROJ-04: Projection starts the month AFTER the latest data point up to `asOf`.
- *          When no such data points exist, starts the month after the current calendar month.
+ * PROJ-04: Projection starts the month after `asOf`, carrying the latest observed balance to that anchor.
  *
  * PROJ-02: Monthly rate = compoundMonthlyRate(annualRate) — NEVER annualRate/12.
  * PROJ-03: Growth rate per asset via resolveGrowthRate (asset override or category default).
@@ -107,14 +109,7 @@ export function buildProjection(
   rateMultiplier = 1.0,
   asOf = currentMonthKey(),
 ): ProjectionBlock {
-  // 1. Determine projection anchor: greatest year_month up to asOf
-  const pastPoints = dataPoints.filter(dp => dp.year_month <= asOf)
-  const latestMonth = pastPoints.length === 0
-    ? asOf
-    : pastPoints.reduce(
-        (best, dp) => (dp.year_month > best ? dp.year_month : best),
-        pastPoints[0].year_month
-      )
+  const latestMonth = asOf
 
   // 2. Build months array: years*12 months starting one month after latestMonth
   //    PROJ-04: projStart = addOneMonth(latestMonth) — never latestMonth itself
@@ -140,7 +135,7 @@ export function buildProjection(
       for (const dp of dataPoints) {
         if (dp.asset_id !== asset.id || dp.year_month <= latestMonth) continue
         const prev = planned.get(dp.year_month)
-        if (!prev || dp.updated_at > prev.updated_at) planned.set(dp.year_month, dp)
+        if (!prev || Date.parse(dp.updated_at) > Date.parse(prev.updated_at)) planned.set(dp.year_month, dp)
       }
       let seed = 0
       if (assetDPs.length > 0) {
@@ -150,7 +145,7 @@ export function buildProjection(
         )
         const bestDP = assetDPs
           .filter(dp => dp.year_month === latestYM)
-          .reduce((a, b) => (a.updated_at > b.updated_at ? a : b))
+          .reduce((a, b) => (Date.parse(a.updated_at) > Date.parse(b.updated_at) ? a : b))
         seed = bestDP.value
       }
 
@@ -160,12 +155,16 @@ export function buildProjection(
       //  - assets cannot be worth less than 0 (a depreciating car bottoms out at 0)
       //  - liabilities cannot be worth more than 0 (a paid-off debt bottoms out at 0;
       //    they're stored as negative numbers, so 0 is the "fully paid" ceiling)
-      // Non-finite inputs (NaN/Infinity from extreme user-typed rates < -100%) collapse to 0.
+
+      const finite = (x: number) => {
+        if (!Number.isFinite(x)) throw new RangeError('Projection exceeds finite numeric range')
+        return x
+      }
       const clamp = cat.type === 'liability'
-        ? (x: number) => (Number.isFinite(x) && x < 0 ? x : 0)
+        ? (x: number) => (finite(x) < 0 ? x : 0)
         : cat.type === 'asset'
-          ? (x: number) => (Number.isFinite(x) && x > 0 ? x : 0)
-          : (x: number) => (Number.isFinite(x) ? x : 0)
+          ? (x: number) => (finite(x) > 0 ? x : 0)
+          : (x: number) => finite(x)
       const plannedValues = months.map(m => planned.get(m)?.value)
       const nextPlanned = (from: number) => plannedValues.findIndex((x, j) => j >= from && x !== undefined)
       let v = seed
@@ -182,7 +181,9 @@ export function buildProjection(
         } else {
           v = clamp(v * (1 + monthlyRate))
         }
-        values[i] += v   // accumulate: multiple assets in same category sum together
+        if (!Number.isFinite(v)) throw new RangeError('Projection exceeds finite numeric range')
+        values[i] += v
+        if (!Number.isFinite(values[i])) throw new RangeError('Projection exceeds finite numeric range')
       }
     }
 
@@ -194,5 +195,6 @@ export function buildProjection(
     series.reduce((sum, s) => sum + s.values[i], 0)
   )
 
-  return { months, series, totals }
+  if (totals.some(value => !Number.isFinite(value))) throw new RangeError('Projection exceeds finite numeric range')
+  return { months, series, totals, asOf, method: 'compound-growth-with-planned-interpolation' }
 }

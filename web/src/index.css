@@ -716,3 +716,21 @@ a {
   background: rgba(225, 29, 72, 0.16);
   color: #fda4af;
 }
+
+.wt-data-table {
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.wt-data-table th, .wt-data-table td {
+  border-bottom: 1px solid #d1d5db;
+  padding: 0.4rem 0.65rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.p-dark .wt-data-table th, .p-dark .wt-data-table td {
+  border-color: #52525b;
+}

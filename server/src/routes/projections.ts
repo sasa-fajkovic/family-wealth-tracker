@@ -1,5 +1,6 @@
 // server/src/routes/projections.ts
 import { Hono } from 'hono'
+import { HTTPException } from 'hono/http-exception'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { readDbAndDataPoints } from '../storage/index.js'
@@ -43,10 +44,15 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   const { startYM, endYM } = getRangeBounds('max', latestMonth, earliestMonth, currentMonth)
   const histMonths = monthRange(startYM, endYM)
   const locfData = locfFill(histMonths, wealthDataPoints, wealthAssets)
-  const historical = aggregateSummary(wealthAssets, wealthCategories, locfData, histMonths)
+  const historical = aggregateSummary(wealthAssets, wealthCategories, locfData, histMonths, 'stock', wealthDataPoints)
 
   // Projection starts at "now"; future-dated (planned) data points override growth in their months.
-  const projection = buildProjection(wealthAssets, wealthCategories, wealthDataPoints, years, rateMultiplier, currentMonth)
+  let projection
+  try { projection = buildProjection(wealthAssets, wealthCategories, wealthDataPoints, years, rateMultiplier, currentMonth) }
+  catch (error) {
+    if (error instanceof RangeError) throw new HTTPException(400, { message: error.message })
+    throw error
+  }
 
   // PROJ-05: combined response with both keys
   return c.json({ historical, projection })

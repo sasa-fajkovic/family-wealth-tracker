@@ -2,6 +2,7 @@
 import type { DataPoint, Asset, Category } from '../models/index.js'
 
 export type FillMode = 'stock' | 'flow'
+export type ObservationStatus = 'observed' | 'carried' | 'missing'
 
 /**
  * Fills monthly values for each asset.
@@ -16,7 +17,7 @@ export type FillMode = 'stock' | 'flow'
  * has a value for every asset.
  *
  * Upsert: when multiple data points share the same asset_id + year_month,
- * the one with the lexicographically largest updated_at wins.
+ * the one with the latest updated_at instant wins.
  *
  * SUM-02: upsert semantics (latest updated_at wins)
  * SUM-03: stock mode — LOCF forward from first entry; 0 before first entry
@@ -47,7 +48,7 @@ export function locfFill(
       grouped.get(dp.year_month)!.push(dp)
     }
     for (const [month, dps] of grouped) {
-      const best = dps.reduce((a, b) => (a.updated_at > b.updated_at ? a : b))
+      const best = dps.reduce((a, b) => (Date.parse(a.updated_at) > Date.parse(b.updated_at) ? a : b))
       monthValue.set(month, best.value)
     }
 
@@ -86,6 +87,7 @@ export function locfFill(
 // ── SummaryResponse ───────────────────────────────────────────────────────────
 
 export interface SummaryResponse {
+  coverage: { observed: number; carried: number; missing: number; total: number }
   months: string[]
   series: {
     category_id: string
@@ -110,6 +112,8 @@ export interface SummaryResponse {
     pct_of_total: number
   }[]
   asset_series: {
+    observation_months: (string | null)[]
+    observation_status: ObservationStatus[]
     asset_id: string
     asset_name: string
     category_id: string
@@ -120,6 +124,8 @@ export interface SummaryResponse {
     values: number[]
   }[]
   asset_breakdown: {
+    observation_month: string | null
+    observation_status: ObservationStatus
     asset_id: string
     asset_name: string
     category_id: string
@@ -156,7 +162,8 @@ export function aggregateSummary(
   categories: Category[],
   locfData: Map<string, Map<string, number>>,
   months: string[],
-  mode: FillMode = 'stock'
+  mode: FillMode = 'stock',
+  dataPoints: DataPoint[] = [],
 ): SummaryResponse {
   const isFlow = mode === 'flow'
   const sumValues = (vals: number[]) => vals.reduce((s, v) => s + v, 0)
@@ -180,7 +187,12 @@ export function aggregateSummary(
   const asset_series = assets.map(asset => {
     const cat = categoryById.get(asset.category_id)
     const values = months.map(month => locfData.get(asset.id)?.get(month) ?? 0)
+    const observedMonths = [...new Set(dataPoints.filter(dp => dp.asset_id === asset.id).map(dp => dp.year_month))].sort()
+    const observation_months = months.map(month => observedMonths.includes(month) ? month : isFlow ? null : observedMonths.filter(m => m < month).at(-1) ?? null)
+    const observation_status: ObservationStatus[] = months.map((month, i) => observation_months[i] === month ? 'observed' : observation_months[i] ? 'carried' : 'missing')
     return {
+      observation_months,
+      observation_status,
       asset_id: asset.id,
       asset_name: asset.name,
       category_id: asset.category_id,
@@ -234,6 +246,8 @@ export function aggregateSummary(
     const first = s.values.length > 0 ? s.values[0] : 0
     const pct_of_total = currentTotal === 0 ? 0 : (value / currentTotal) * 100
     return {
+      observation_month: s.observation_months.at(-1) ?? null,
+      observation_status: s.observation_status.at(-1) ?? 'missing',
       asset_id: s.asset_id,
       asset_name: s.asset_name,
       category_id: s.category_id,
@@ -248,7 +262,10 @@ export function aggregateSummary(
     }
   })
 
-  return {
+  const coverage = { observed: 0, carried: 0, missing: 0, total: assets.length }
+  for (const asset of asset_breakdown) coverage[asset.observation_status]++
+  const response = {
+    coverage,
     months,
     series,
     totals,
@@ -262,4 +279,22 @@ export function aggregateSummary(
     asset_series,
     asset_breakdown,
   }
+  assertFiniteNumbers(response)
+  return response
+}
+
+function assertFiniteNumbers(value: unknown): void {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new RangeError('Summary exceeds finite numeric range')
+  if (value !== null && typeof value === 'object') for (const child of Object.values(value)) assertFiniteNumbers(child)
+}
+
+export function observationCoverage(assets: Asset[], categories: Category[], points: DataPoint[], month: string) {
+  const coverage = { observed: 0, carried: 0, missing: 0, total: assets.length }
+  for (const asset of assets) {
+    const months = points.filter(point => point.asset_id === asset.id).map(point => point.year_month)
+    if (months.includes(month)) coverage.observed++
+    else if (categories.find(category => category.id === asset.category_id)?.type !== 'cash-inflow' && months.some(value => value < month)) coverage.carried++
+    else coverage.missing++
+  }
+  return coverage
 }

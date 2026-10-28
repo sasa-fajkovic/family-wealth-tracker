@@ -101,22 +101,26 @@ test.describe('Admin page', () => {
 
   test('creates a person and asset through the UI', async ({ page, request }) => {
     const personName = uniqueName('Admin Person')
-    await createAssetCategory(request, 'Admin Category')
+    const category = await createAssetCategory(request, 'Admin Category')
     const assetName = uniqueName('Admin Asset')
 
     await page.goto('/admin')
     await page.getByRole('tab', { name: 'People' }).click()
     await page.getByRole('button', { name: 'Add Person' }).click()
     await page.getByRole('textbox').first().fill(personName)
-    await page.getByRole('button', { name: 'Save' }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.getByText(personName)).toBeVisible()
 
     await page.getByRole('tab', { name: 'Assets' }).click()
     await page.getByRole('button', { name: 'Add Asset' }).click()
     await page.getByRole('textbox').first().fill(assetName)
-    await expect(page.getByRole('dialog')).toContainText(personName)
-    await page.getByRole('button', { name: 'Save' }).click()
-    await expect(page.getByText(assetName)).toBeVisible()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByRole('combobox').nth(0).click()
+    await page.getByRole('option', { name: category.name, exact: true }).click()
+    await dialog.getByRole('combobox').nth(1).click()
+    await page.getByRole('option', { name: personName, exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(rowContaining(page, assetName)).toContainText(personName)
   })
 
   test('Liabilities tab is accessible', async ({ page }) => {
@@ -166,6 +170,7 @@ test.describe('Monthly Update page', () => {
     await expect(page.getByRole('combobox', { name: 'Select month' })).toBeVisible()
     await expect(page.getByRole('spinbutton', { name: 'Jump to year' })).toBeVisible()
     await expect(page.getByRole('link', { name: 'Monthly Update' })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     await expect(page.getByRole('link', { name: 'History / Corrections' })).toBeVisible()
   })
 
@@ -364,9 +369,9 @@ test.describe('Projections page', () => {
 
   test('scenario selector buttons are visible with correct labels', async ({ page }) => {
     await page.goto('/projections')
-    await expect(page.getByRole('button', { name: 'Conservative' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Base' })).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Aggressive' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '0.5× rates', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '1× rates', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: '1.5× rates', exact: true })).toBeVisible()
   })
 
   test('custom horizon input and Apply button are present', async ({ page }) => {
@@ -424,57 +429,23 @@ test.describe('Projections page', () => {
   test('assumptions panel is a static visible growth rates section', async ({ page }) => {
     await page.goto('/projections')
     await page.waitForLoadState('networkidle')
-    await expect(page.getByText('Growth Assumptions')).toBeVisible()
+    await expect(page.getByText('Growth Assumptions', { exact: true })).toBeVisible()
     const panel = page.locator('#assumptions-panel')
     await expect(panel).toBeVisible()
     await expect(panel.getByText(/rates as stored|half stored rates|1\.5×/i).first()).toBeVisible()
   })
 
-  test('custom projection target year input is present in top controls', async ({ page }) => {
+  test('horizon uses one custom control and presets update it', async ({ page }) => {
     await page.goto('/projections')
-    await page.waitForLoadState('networkidle')
-    await expect(page.getByLabel('Custom projection target year')).toBeVisible()
-  })
-
-  test('target milestone year follows selected projection horizon', async ({ page }) => {
-    await page.goto('/projections')
-    await page.waitForLoadState('networkidle')
-
-    const targetYear = page.getByLabel('Custom projection target year')
-    const anchorYear = await page.evaluate(() => {
-      const text = document.body.textContent ?? ''
-      const match = text.match(/From latest data month (\d{4})-\d{2}/)
-      return match ? Number(match[1]) : new Date().getFullYear()
-    })
-
+    const horizon = page.getByLabel('Custom horizon in years')
+    await expect(page.getByLabel('Custom projection target year')).toHaveCount(0)
     await page.getByRole('button', { name: '5Y' }).click()
-    await expect(targetYear).toHaveValue(String(anchorYear + 5))
-
+    await expect(horizon).toHaveValue('5')
     await page.getByRole('button', { name: '30Y' }).click()
-    await expect(targetYear).toHaveValue(String(anchorYear + 30))
-
-    await page.getByRole('button', { name: '10Y' }).click()
-    await expect(targetYear).toHaveValue(String(anchorYear + 10))
-  })
-
-  test('custom target year updates the custom horizon years field', async ({ page }) => {
-    await page.goto('/projections')
-    await page.waitForLoadState('networkidle')
-
-    const targetYear = page.getByLabel('Custom projection target year')
-    const customHorizon = page.getByLabel('Custom horizon in years')
-    const anchorYear = await page.evaluate(() => {
-      const text = document.body.textContent ?? ''
-      const match = text.match(/From latest data month (\d{4})-\d{2}/)
-      return match ? Number(match[1]) : new Date().getFullYear()
-    })
-
-    await targetYear.fill(String(anchorYear + 12))
-    await page.getByRole('button', { name: 'Apply custom projection year' }).click()
-    await page.waitForLoadState('networkidle')
-
-    await expect(customHorizon).toHaveValue('12')
-    await expect(targetYear).toHaveValue(String(anchorYear + 12))
+    await expect(horizon).toHaveValue('30')
+    await horizon.fill('12')
+    await page.getByRole('button', { name: 'Apply custom horizon' }).click()
+    await expect(horizon).toHaveValue('12')
   })
 
   test('scenario API param: conservative scenario loads without error', async ({ request }) => {
@@ -588,12 +559,12 @@ test.describe('Income page', () => {
     await page.goto('/income')
     await page.waitForLoadState('networkidle')
     await expect(page.getByRole('paragraph').filter({ hasText: 'Income by Person' })).toBeVisible()
-    await expect(page.getByText(personA.name).last()).toBeVisible()
-    await expect(page.getByText(personB.name).last()).toBeVisible()
+    await expect(page.getByRole('button', { name: `Show only ${personA.name}` })).toBeVisible()
+    await expect(page.getByRole('button', { name: `Show only ${personB.name}` })).toBeVisible()
 
     await page.getByRole('button', { name: `Show only ${personA.name}` }).click()
     await expect(page.getByText('Income Sources', { exact: true })).toBeVisible()
-    await expect(page.getByText(salaryA.name)).toBeVisible()
+    await expect(page.getByRole('button', { name: `Disable ${salaryA.name}` })).toBeVisible()
   })
 
   test('pie chart does not render the generic net worth trend strip', async ({ page, request }) => {
@@ -626,8 +597,8 @@ test.describe('Analytics page', () => {
     await page.goto('/analytics')
     await expect(page).toHaveTitle(/Analytics|WealthTrack/)
     await expect(page.getByRole('heading', { name: 'Analytics' })).toHaveCount(0)
-    await expect(page.getByText('1Y')).toBeVisible()
-    await expect(page.getByText('Max')).toBeVisible()
+    await expect(page.getByRole('button', { name: '1Y', exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Max', exact: true })).toBeVisible()
   })
 
   test('shows metric cards when wealth data exists', async ({ page, request }) => {
@@ -688,10 +659,11 @@ test.describe('Analytics page', () => {
     await page.goto('/analytics')
     await page.waitForLoadState('networkidle')
 
-    // New chart section headings should be visible
+    await expect(page.getByText('Financial Profile Radar')).toBeHidden()
+    await page.getByText('Explore more', { exact: true }).click()
     await expect(page.getByText('Financial Profile Radar')).toBeVisible()
     await expect(page.getByText('Category Performance Scatter')).toBeVisible()
-    await expect(page.getByText('Portfolio Bubble Map')).toBeVisible()
+    await expect(page.getByText('Portfolio Bubble Map', { exact: true })).toBeVisible()
     // Mixed chart heading contains 'Mixed'
     await expect(page.getByText(/Mixed/)).toBeVisible()
   })
@@ -842,4 +814,191 @@ test.describe('Accessibility — keyboard and ARIA', () => {
     await expect(personFilter).toBeVisible()
     await expect(categoryFilter).toBeVisible()
   })
+})
+
+test('monthly unsaved changes can be kept, discarded, or saved before navigation', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Guard Person') })
+  const category = await createAssetCategory(request, 'Guard Category')
+  const asset = await createJson(request, '/api/v1/assets', {
+    name: uniqueName('Guard Asset'), category_id: category.id, projected_yearly_growth: null, person_id: person.id,
+  })
+  await page.goto('/monthly-update')
+  const input = page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name}`) }).last()
+  await input.fill('123')
+  await page.getByRole('link', { name: 'Analytics' }).click()
+  await expect(page.getByRole('dialog', { name: 'Unsaved changes' })).toBeVisible()
+  await page.getByRole('button', { name: 'Stay' }).click()
+  await expect(input).toHaveValue('123')
+  await page.getByRole('link', { name: 'Analytics' }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page).toHaveURL(/analytics/)
+  await page.goto('/monthly-update')
+  await expect(input).toHaveValue('123')
+  await input.fill('456')
+  await page.getByRole('link', { name: 'Analytics' }).click()
+  await page.getByRole('button', { name: 'Discard' }).click()
+  await expect(page).toHaveURL(/analytics/)
+  await page.goto('/monthly-update')
+  await expect(input).toHaveValue('123')
+})
+
+test('monthly failed save keeps the entered value', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Failure Person') })
+  const category = await createAssetCategory(request, 'Failure Category')
+  const asset = await createJson(request, '/api/v1/assets', {
+    name: uniqueName('Failure Asset'), category_id: category.id, projected_yearly_growth: null, person_id: person.id,
+  })
+  await page.goto('/monthly-update')
+  const input = page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name}`) }).last()
+  await input.fill('789')
+  await page.route('**/api/v1/data-points/batch', route => route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'Save failed' }) }))
+  await page.getByRole('button', { name: /Save All/ }).click()
+  await expect(page.getByText('Save failed')).toBeVisible()
+  await expect(input).toHaveValue('789')
+})
+
+test('failed month load cannot save old rows into the selected month', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Month failure person') })
+  const category = await createAssetCategory(request)
+  const asset = await createJson(request, '/api/v1/assets', { name: uniqueName('Month failure asset'), category_id: category.id, projected_yearly_growth: null, person_id: person.id })
+  await page.goto('/monthly-update?month=2026-03')
+  await expect(page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name}`) }).last()).toBeVisible()
+  await page.route('**/api/v1/data-points?year_month=2026-04', route => route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"Load failed"}' }))
+  await page.getByRole('combobox', { name: 'Select month' }).click()
+  await page.getByRole('option', { name: 'April', exact: true }).click()
+  await expect(page.getByText(/Could not load data/)).toBeVisible()
+  await expect(page.getByRole('button', { name: /Save All/ })).toBeDisabled()
+  const response = await request.get(`/api/v1/data-points?year_month=2026-04`)
+  expect((await response.json()).some((dp: { asset_id: string }) => dp.asset_id === asset.id)).toBe(false)
+})
+
+test('import preview cannot be applied to a different file while awaiting response', async ({ page }) => {
+  await page.goto('/admin')
+  await page.getByRole('button', { name: /Import/ }).first().click()
+  const dialog = page.getByRole('dialog', { name: 'Import data' })
+  const input = dialog.locator('input[type=file]')
+  await input.setInputFiles({ name: 'first.yaml', mimeType: 'text/yaml', buffer: Buffer.from('first') })
+  let release: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/api/v1/import/database?preview=true', async route => {
+    await gate
+    await route.fulfill({ json: { preview: true, counts: { assets: 1 }, conflicts: [], orphans: [], needs_force: false } })
+  })
+  await dialog.getByRole('button', { name: 'Preview import' }).click()
+  await expect(input).toBeDisabled()
+  await expect(dialog.getByRole('combobox')).toBeDisabled()
+  release?.()
+  await expect(dialog.getByRole('button', { name: 'Apply import' })).toBeVisible()
+  await input.setInputFiles({ name: 'second.yaml', mimeType: 'text/yaml', buffer: Buffer.from('second') })
+  await expect(dialog.getByRole('button', { name: 'Apply import' })).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: 'Preview import' })).toBeEnabled()
+})
+
+test('person and range filters persist across dashboard, analytics, and income', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Shared filter person') })
+  await page.goto('/')
+  await page.getByRole('button', { name: '1Y', exact: true }).click()
+  await page.getByRole('button', { name: person.name, exact: true }).click()
+  await page.getByRole('link', { name: 'Analytics' }).click()
+  await expect(page.getByRole('button', { name: '1Y', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: person.name, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('link', { name: 'Income' }).click()
+  await expect(page.getByRole('button', { name: '1Y', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: person.name, exact: true })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('mobile monthly status and navigation expose state', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Mobile person') })
+  const category = await createAssetCategory(request)
+  const asset = await createJson(request, '/api/v1/assets', { name: uniqueName('Mobile asset'), category_id: category.id, projected_yearly_growth: null, person_id: person.id })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/monthly-update')
+  const card = page.getByTestId('monthly-row').filter({ hasText: asset.name }).first()
+  await expect(card.getByText('Missing', { exact: true })).toBeVisible()
+  await card.getByRole('spinbutton').fill('42')
+  await expect(card.getByText('Unsaved', { exact: true })).toBeVisible()
+  const menu = page.getByRole('button', { name: 'Open navigation menu' })
+  await expect(menu).toHaveAttribute('aria-expanded', 'false')
+  await menu.click()
+  await expect(page.getByRole('button', { name: 'Close navigation menu' })).toHaveAttribute('aria-expanded', 'true')
+})
+
+test('income average includes recorded zero and negative months and excludes planned months', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Observed income person') })
+  const category = await createJson(request, '/api/v1/categories', { name: uniqueName('Observed income category'), projected_yearly_growth: 0, color: '#14b8a6', type: 'cash-inflow' })
+  const source = await createJson(request, '/api/v1/assets', { name: uniqueName('Negative income source'), category_id: category.id, projected_yearly_growth: null, person_id: person.id })
+  const month = (offset: number) => {
+    const today = new Date()
+    const date = new Date(today.getFullYear(), today.getMonth() + offset, 1)
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  }
+  await createJson(request, '/api/v1/data-points', { asset_id: source.id, year_month: month(-1), value: 0 })
+  await createJson(request, '/api/v1/data-points', { asset_id: source.id, year_month: month(0), value: -100 })
+  await createJson(request, '/api/v1/data-points', { asset_id: source.id, year_month: month(1), value: 10000 })
+  await page.goto('/income')
+  await page.getByRole('button', { name: '1Y', exact: true }).click()
+  await page.getByRole('button', { name: person.name, exact: true }).click()
+  await expect(page.getByText('2 observed months · 10 missing months')).toBeVisible()
+  const avg = page.getByText('Avg / Month').locator('..')
+  await expect(avg).toContainText('-50,00')
+  await expect(page.getByRole('button', { name: `Disable ${source.name}` })).toBeVisible()
+  await page.getByText('Show planned').click()
+  await expect(avg).toContainText('-50,00')
+  await expect(page.getByText('2 observed months · 10 missing months')).toBeVisible()
+  await page.getByRole('button', { name: `Disable ${source.name}` }).click()
+  await expect(page.getByText('No sources selected')).toBeVisible()
+  await expect(avg).toContainText('—')
+  await expect(avg).not.toContainText('0,00')
+})
+
+test('dashboard completion counts visible wealth and income entries for the selected person', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Coverage person') })
+  const category = await createAssetCategory(request, 'Coverage asset')
+  const income = await createJson(request, '/api/v1/categories', { name: uniqueName('Coverage income'), projected_yearly_growth: 0, color: '#14b8a6', type: 'cash-inflow' })
+  const current = new Date()
+  const ym = (offset: number) => { const d = new Date(current.getFullYear(), current.getMonth() + offset, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` }
+  const asset = await createJson(request, '/api/v1/assets', { name: uniqueName('Coverage observed'), category_id: category.id, projected_yearly_growth: null, person_id: person.id })
+  await createJson(request, '/api/v1/assets', { name: uniqueName('Coverage income'), category_id: income.id, projected_yearly_growth: null, person_id: person.id })
+  await createJson(request, '/api/v1/assets', { name: uniqueName('Coverage future'), category_id: category.id, projected_yearly_growth: null, person_id: person.id, show_from: ym(1) })
+  await createJson(request, '/api/v1/data-points', { asset_id: asset.id, year_month: ym(0), value: 100 })
+  await page.goto('/')
+  await page.getByRole('button', { name: person.name, exact: true }).click()
+  const completion = page.getByRole('link', { name: /Monthly completion/ })
+  await expect(completion).toContainText('1/2 observed')
+  await completion.click()
+  await expect(page.getByTestId('monthly-row').filter({ visible: true })).toHaveCount(2)
+})
+
+
+test('unsaved dialog supports keyboard escape to stay', async ({ page, request }) => {
+  const person = await createJson(request, '/api/v1/persons', { name: uniqueName('Keyboard guard person') })
+  const category = await createAssetCategory(request)
+  const asset = await createJson(request, '/api/v1/assets', { name: uniqueName('Keyboard guard asset'), category_id: category.id, projected_yearly_growth: null, person_id: person.id })
+  await page.goto('/monthly-update')
+  const input = page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name}`) }).last()
+  await input.fill('100')
+  await page.getByRole('link', { name: 'Analytics' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Unsaved changes' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Stay' })).toBeFocused()
+  for (let i = 0; i < 5; i++) {
+    await page.keyboard.press('Tab')
+    await expect(dialog.locator(':focus')).toBeVisible()
+  }
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await expect(input).toHaveValue('100')
+})
+
+test('mobile navigation remains usable in both themes', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  for (let i = 0; i < 2; i++) {
+    await page.getByRole('button', { name: 'Open navigation menu' }).click()
+    await expect(page.getByRole('link', { name: 'Monthly Update' })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await page.keyboard.press('Escape')
+    await expect(page.getByRole('button', { name: 'Open navigation menu' })).toHaveAttribute('aria-expanded', 'false')
+    await page.getByRole('button', { name: /Switch to (light|dark) mode/ }).click()
+  }
 })

@@ -44,7 +44,6 @@ export interface Person {
 // Used by the API client create/update functions.
 
 export interface CreateCategoryPayload {
-  id: string
   name: string
   projected_yearly_growth: number
   color: string
@@ -59,7 +58,6 @@ export interface UpdateCategoryPayload {
 }
 
 export interface CreateAssetPayload {
-  id: string
   name: string
   category_id: string
   projected_yearly_growth: number | null
@@ -118,6 +116,8 @@ export interface SummaryResponse {
     value: number
     pct_of_total: number
   }[]
+  monthly_coverage?: { observed: number; carried: number; missing: number; total: number }
+  coverage: { observed: number; carried: number; missing: number; total: number }
   asset_series: {
     asset_id: string
     asset_name: string
@@ -127,6 +127,8 @@ export interface SummaryResponse {
     category_type: 'asset' | 'cash-inflow' | 'liability'
     person_id: string
     values: number[]
+    observation_months: (string | null)[]
+    observation_status: ('observed' | 'carried' | 'missing')[]
   }[]
   asset_breakdown: {
     asset_id: string
@@ -140,6 +142,8 @@ export interface SummaryResponse {
     pct_of_total: number
     monthly_delta_abs: number
     period_delta_abs: number
+    observation_month: string | null
+    observation_status: 'observed' | 'carried' | 'missing'
   }[]
 }
 
@@ -150,6 +154,8 @@ export type ProjectionScenario = 'conservative' | 'base' | 'aggressive'
 export interface ProjectionsResponse {
   historical: SummaryResponse
   projection: {
+    asOf: string
+    method: 'compound-growth-with-planned-interpolation'
     months: string[]
     series: { category_id: string; category_name: string; color: string; values: number[] }[]
     totals: number[]

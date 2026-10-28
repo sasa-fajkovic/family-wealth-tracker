@@ -10,11 +10,11 @@ import { zodErrorHook as hook } from '../util/zodHook.js'
 const router = new Hono()
 
 const baseSchema = z.object({
-  name: z.string().min(1, 'name is required'),
-  projected_yearly_growth: z.number(),
+  name: z.string().trim().min(1, 'name is required').refine(v => toSlug(v).length > 0, 'name must produce a nonempty id'),
+  projected_yearly_growth: z.number().finite().min(-1),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'color must be a 6-digit hex color'),
   type: z.enum(['asset', 'cash-inflow', 'liability']),
-})
+}).strict()
 
 const liabilityGrowthCheck = (d: { type: string; projected_yearly_growth: number }) =>
   !(d.type === 'liability' && d.projected_yearly_growth > 0)
@@ -37,14 +37,15 @@ router.post('/', zValidator('json', createSchema, hook), async (c) => {
   const body = c.req.valid('json')
   const id = toSlug(body.name)
 
-  const db = await readDb()
-  if (db.categories.find((cat) => cat.id === id)) {
-    throw new HTTPException(409, { message: `Category with id '${id}' already exists` })
-  }
-
   const category: Category = { id, ...body }
   await mutateDb(
-    (db) => ({ ...db, categories: [...db.categories, category] }),
+    (db) => {
+      if (db.categories.find((cat) => cat.id === id)) {
+        throw new HTTPException(409, { message: `Category with id '${id}' already exists` })
+      }
+
+      return { ...db, categories: [...db.categories, category] }
+    },
     { action: 'category.create', meta: { id: category.id, name: category.name } },
   )
   return c.json(category, 201)
@@ -59,20 +60,20 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
     throw new HTTPException(400, { message: 'id cannot be changed' })
   }
 
-  const db = await readDb()
-  const idx = db.categories.findIndex((cat) => cat.id === paramId)
-  if (idx === -1) throw new HTTPException(404, { message: 'Category not found' })
-
-  // Destructure _id out so updateData never contains id (noUnusedLocals: _ prefix is exempt)
-  const { id: _id, ...updateData } = body
-  const updated: Category = { ...db.categories[idx], ...updateData, id: paramId }
+  let updated!: Category
   await mutateDb(
     (db) => {
+      const idx = db.categories.findIndex((cat) => cat.id === paramId)
+      if (idx === -1) throw new HTTPException(404, { message: 'Category not found' })
+
+      // Destructure _id out so updateData never contains id (noUnusedLocals: _ prefix is exempt)
+      const { id: _id, ...updateData } = body
+      updated = { ...db.categories[idx], ...updateData, id: paramId }
       const cats = [...db.categories]
       cats[idx] = updated
       return { ...db, categories: cats }
     },
-    { action: 'category.update', meta: { id: paramId, name: updated.name } },
+    { action: 'category.update', meta: () => ({ id: paramId, name: updated.name }) },
   )
   return c.json(updated)
 })
@@ -82,32 +83,14 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
 router.delete('/:id', async (c) => {
   const id = c.req.param('id')
   const reassignTo = c.req.query('reassign_to')
-
-  const db = await readDb()
-  if (!db.categories.find((cat) => cat.id === id)) {
-    throw new HTTPException(404, { message: 'Category not found' })
-  }
-
-  const affected = db.assets.filter((a) => a.category_id === id)
-
-  if (affected.length > 0 && reassignTo === undefined) {
-    return c.json({ needs_reassign: true, assets: affected }, 409 as const)
-  }
-
-  if (reassignTo && !db.categories.find((cat) => cat.id === reassignTo)) {
-    throw new HTTPException(400, { message: 'reassign_to category not found' })
-  }
-
-  await mutateDb(
-    (db) => ({
-      ...db,
-      categories: db.categories.filter((cat) => cat.id !== id),
-      assets: affected.length > 0 && reassignTo
-        ? db.assets.map((a) => a.category_id === id ? { ...a, category_id: reassignTo } : a)
-        : db.assets,
-    }),
-    { action: 'category.delete', meta: { id, reassigned_to: reassignTo ?? null } },
-  )
+  await mutateDb(db => {
+    if (!db.categories.some(record => record.id === id)) throw new HTTPException(404, { message: 'Category not found' })
+    const affected = db.assets.filter(a => a.category_id === id)
+    if (affected.length && !reassignTo) throw new HTTPException(409, { res: c.json({ needs_reassign: true, assets: affected }, 409) })
+    if (reassignTo && (reassignTo === id || !db.categories.some(record => record.id === reassignTo))) throw new HTTPException(400, { message: 'Invalid reassign_to category' })
+    return { ...db, categories: db.categories.filter(record => record.id !== id),
+      assets: db.assets.map(a => a.category_id === id ? { ...a, category_id: reassignTo! } : a) }
+  }, { action: 'category.delete', meta: { id, reassigned_to: reassignTo ?? null } })
   return c.json({ success: true })
 })
 

@@ -87,7 +87,6 @@ function handleSubmit() {
   const storedRate = rateInput.value / 100
   if (props.mode === 'create') {
     props.onSave({
-      id: slugPreview.value,
       name: name.value.trim(),
       projected_yearly_growth: storedRate,
       color: color.value,

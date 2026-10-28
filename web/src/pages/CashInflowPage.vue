@@ -14,6 +14,7 @@ import Button from 'primevue/button'
 import { useChartType } from '../composables/useChartType'
 import { useDataRefresh } from '../composables/useDataRefresh'
 import { useShowPlanned } from '../composables/useShowPlanned'
+import { useSharedFilters } from '../composables/useSharedFilters'
 
 const RANGES: { label: string; value: RangeKey }[] = [
   { label: 'YTD', value: 'ytd' }, { label: '6M',  value: '6m'  },
@@ -22,10 +23,9 @@ const RANGES: { label: string; value: RangeKey }[] = [
   { label: '10Y', value: '10y' }, { label: 'Max', value: 'max' },
 ]
 
-const range = ref<RangeKey>('3y')
+const { range, person } = useSharedFilters()
 const persons = ref<Person[]>([])
 const assets = ref<Asset[]>([])
-const person = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
 const plannedData = ref<SummaryResponse | null>(null)
 const { showPlanned } = useShowPlanned()
@@ -64,7 +64,9 @@ onMounted(() => {
   loadAssets()
 })
 
+let loadSequence = 0
 async function loadSummary() {
+  const sequence = ++loadSequence
   loading.value = true
   error.value = null
   try {
@@ -73,12 +75,13 @@ async function loadSummary() {
       getSummary(range.value, personId, true),
       showPlanned.value ? getSummary(range.value, personId, true, true) : null,
     ])
+    if (sequence !== loadSequence) return
     data.value = result
     plannedData.value = planned
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === loadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -101,11 +104,11 @@ const isEmpty = computed(() => !loading.value && data.value && data.value.series
 
 // Summary stats — when person is selected, derive from enabled sources only
 const totalInflow = computed(() => displayData.value?.current_total ?? data.value?.current_total ?? 0)
-const monthsWithData = computed(() => {
-  const totals = displayData.value?.totals ?? data.value?.totals
-  if (!totals) return 0
-  return totals.filter(t => t > 0).length
-})
+const monthsWithData = computed(() => data.value?.months.filter((_, i) =>
+  data.value?.asset_series.some(series => !disabledSourceIds.value.has(series.asset_id) && series.observation_status?.[i] === 'observed')
+).length ?? 0)
+const noSourcesSelected = computed(() => person.value !== null && personSources.value.length > 0 && personSources.value.every(source => source.disabled))
+const missingMonths = computed(() => (data.value?.months.length ?? 0) - monthsWithData.value)
 const avgMonthlyInflow = computed(() => {
   const months = monthsWithData.value
   return months > 0 ? totalInflow.value / months : 0
@@ -122,7 +125,7 @@ const chartSubtitle = computed(() => {
 const topSources = computed(() => {
   if (person.value !== null || !displayData.value) return []
   return [...displayData.value.category_breakdown]
-    .filter(r => r.value > 0)
+    .filter(r => r.value !== 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
 })
@@ -135,7 +138,7 @@ const personSources = computed(() => {
   const groups = new Map<string, { id: string; name: string; color: string; total: number }>()
   data.value.asset_series.forEach((series, index) => {
     const total = series.values.reduce((sum, v) => sum + v, 0)
-    if (total <= 0) return
+    if (total === 0 && !series.observation_status?.includes('observed')) return
     const existing = groups.get(series.asset_id)
     if (existing) {
       existing.total += total
@@ -219,7 +222,7 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
   })
 
   const series = [...groups.values()]
-    .filter(group => group.values.some(v => v > 0))
+    .filter(group => group.values.some(v => v !== 0))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(group => ({
       category_id: group.id,
@@ -250,6 +253,7 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
 
   return {
     ...source,
+    asset_series: source.asset_series.filter(series => groupByPerson || !disabledSourceIds.value.has(series.asset_id)),
     series,
     totals,
     current_total: currentTotal,
@@ -329,11 +333,12 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
           <div class="grid grid-cols-2 gap-3 self-start">
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
               <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Total Income</p>
-              <p class="text-base font-bold text-green-600 dark:text-green-400 tabular-nums sm:text-lg">{{ eurFmt.format(totalInflow) }}</p>
+              <p class="text-base font-bold text-green-600 dark:text-green-400 tabular-nums sm:text-lg">{{ monthsWithData ? eurFmt.format(totalInflow) : '—' }}</p>
             </div>
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
               <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Avg / Month</p>
-              <p class="text-base font-bold text-gray-900 dark:text-zinc-100 tabular-nums sm:text-lg">{{ eurFmt.format(avgMonthlyInflow) }}</p>
+              <p class="text-base font-bold text-gray-900 dark:text-zinc-100 tabular-nums sm:text-lg">{{ monthsWithData ? eurFmt.format(avgMonthlyInflow) : '—' }}</p>
+              <p class="text-xs text-gray-500">{{ noSourcesSelected ? 'No sources selected' : `${monthsWithData} observed months · ${missingMonths} missing months` }}</p>
             </div>
           </div>
 

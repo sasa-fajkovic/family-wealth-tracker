@@ -291,3 +291,39 @@ describe('flow mode', () => {
     assert.equal(algebra.get('2024-03'), 0)
   })
 })
+
+describe('observation provenance', () => {
+  test('distinguishes explicit zero, carry and missing observations', () => {
+    const months = ['2024-01', '2024-02', '2024-03']
+    const assets = [makeAsset('a1'), makeAsset('a2')]
+    const points = [makeDP('a1', '2024-02', 0, '2024-02-01T00:00:00Z')]
+    const result = aggregateSummary(assets, [makeCategory('cat1', 'Stock')], locfFill(months, points, assets), months, 'stock', points)
+    assert.deepEqual(result.asset_series[0].observation_status, ['missing', 'observed', 'carried'])
+    assert.deepEqual(result.asset_series[0].observation_months, [null, '2024-02', '2024-02'])
+    assert.deepEqual(result.coverage, { observed: 0, carried: 1, missing: 1, total: 2 })
+    assert.equal(result.asset_breakdown[0].observation_month, '2024-02')
+  })
+
+  test('flow metadata retains explicit zero and negative observations without counting missing months', () => {
+    const months = ['2024-01', '2024-02', '2024-03']
+    const assets = [makeAsset('a1')]
+    const points = [makeDP('a1', '2024-01', 0, '2024-01-01T00:00:00Z'), makeDP('a1', '2024-03', -20, '2024-03-01T00:00:00Z')]
+    const result = aggregateSummary(assets, [makeCategory('cat1', 'Income')], locfFill(months, points, assets, 'flow'), months, 'flow', points)
+    assert.deepEqual(result.asset_series[0].values, [0, 0, -20])
+    assert.deepEqual(result.asset_series[0].observation_status, ['observed', 'missing', 'observed'])
+    assert.deepEqual(result.asset_series[0].observation_months, ['2024-01', null, '2024-03'])
+    assert.equal(result.current_total, -20)
+  })
+
+  test('compares updated timestamps by instant rather than timezone text', () => {
+    const assets = [makeAsset('a1')]
+    const points = [makeDP('a1', '2024-01', 10, '2024-01-02T01:00:00+02:00'), makeDP('a1', '2024-01', 20, '2024-01-01T23:30:00Z')]
+    assert.equal(locfFill(['2024-01'], points, assets).get('a1')?.get('2024-01'), 20)
+  })
+
+  test('rejects aggregate numeric overflow instead of emitting JSON null', () => {
+    const assets = [makeAsset('a1'), makeAsset('a2')]
+    const points = assets.map(asset => makeDP(asset.id, '2024-01', 1e308, '2024-01-01T00:00:00Z'))
+    assert.throws(() => aggregateSummary(assets, [makeCategory('cat1', 'Stock')], locfFill(['2024-01'], points, assets), ['2024-01']), /finite numeric range/)
+  })
+})

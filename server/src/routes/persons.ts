@@ -10,8 +10,8 @@ import { zodErrorHook as hook } from '../util/zodHook.js'
 const router = new Hono()
 
 const createSchema = z.object({
-  name: z.string().min(1, 'name is required'),
-})
+  name: z.string().trim().min(1, 'name is required').refine(v => toSlug(v).length > 0, 'name must produce a nonempty id'),
+}).strict()
 
 const updateSchema = createSchema.extend({ id: z.string().optional() })
 
@@ -25,13 +25,14 @@ router.get('/', async (c) => {
 router.post('/', zValidator('json', createSchema, hook), async (c) => {
   const body = c.req.valid('json')
   const id = toSlug(body.name)
-  const db = await readDb()
-  if ((db.persons ?? []).find((p) => p.id === id)) {
-    throw new HTTPException(409, { message: `Person with id '${id}' already exists` })
-  }
   const person: Person = { id, name: body.name }
   await mutateDb(
-    (db) => ({ ...db, persons: [...(db.persons ?? []), person] }),
+    (db) => {
+      if ((db.persons ?? []).find((p) => p.id === id)) {
+        throw new HTTPException(409, { message: `Person with id '${id}' already exists` })
+      }
+      return { ...db, persons: [...db.persons, person] }
+    },
     { action: 'person.create', meta: { id: person.id, name: person.name } },
   )
   return c.json(person, 201)
@@ -44,18 +45,18 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
   if (body.id !== undefined && body.id !== paramId) {
     throw new HTTPException(400, { message: 'id cannot be changed' })
   }
-  const db = await readDb()
-  const idx = (db.persons ?? []).findIndex((p) => p.id === paramId)
-  if (idx === -1) throw new HTTPException(404, { message: 'Person not found' })
-  const { id: _id, ...updateData } = body
-  const updated: Person = { ...(db.persons ?? [])[idx], ...updateData, id: paramId }
+  let updated!: Person
   await mutateDb(
     (db) => {
+      const idx = (db.persons ?? []).findIndex((p) => p.id === paramId)
+      if (idx === -1) throw new HTTPException(404, { message: 'Person not found' })
+      const { id: _id, ...updateData } = body
+      updated = { ...(db.persons ?? [])[idx], ...updateData, id: paramId }
       const persons = [...(db.persons ?? [])]
       persons[idx] = updated
       return { ...db, persons }
     },
-    { action: 'person.update', meta: { id: paramId, name: updated.name } },
+    { action: 'person.update', meta: () => ({ id: paramId, name: updated.name }) },
   )
   return c.json(updated)
 })
@@ -65,34 +66,15 @@ router.put('/:id', zValidator('json', updateSchema, hook), async (c) => {
 // (person_id is required on all assets — "unassign" is not allowed).
 router.delete('/:id', async (c) => {
   const id = c.req.param('id')
-  const reassignTo = c.req.query('reassign_to')   // undefined or empty = not provided
-  const db = await readDb()
-
-  if (!(db.persons ?? []).find((p) => p.id === id)) {
-    throw new HTTPException(404, { message: 'Person not found' })
-  }
-
-  const affected = db.assets.filter((a) => a.person_id === id)
-
-  if (affected.length > 0 && !reassignTo) {
-    // Frontend hasn't confirmed reassignment yet — return affected assets for the dialog
-    return c.json({ needs_reassign: true, assets: affected }, 409 as const)
-  }
-
-  if (reassignTo && !(db.persons ?? []).find((p) => p.id === reassignTo)) {
-    throw new HTTPException(400, { message: 'reassign_to person not found' })
-  }
-
-  await mutateDb(
-    (db) => ({
-      ...db,
-      persons: (db.persons ?? []).filter((p) => p.id !== id),
-      assets: db.assets.map((a) =>
-        a.person_id === id ? { ...a, person_id: reassignTo! } : a
-      ),
-    }),
-    { action: 'person.delete', meta: { id, reassigned_to: reassignTo ?? null } },
-  )
+  const reassignTo = c.req.query('reassign_to')
+  await mutateDb(db => {
+    if (!db.persons.some(record => record.id === id)) throw new HTTPException(404, { message: 'Person not found' })
+    const affected = db.assets.filter(a => a.person_id === id)
+    if (affected.length && !reassignTo) throw new HTTPException(409, { res: c.json({ needs_reassign: true, assets: affected }, 409) })
+    if (reassignTo && (reassignTo === id || !db.persons.some(record => record.id === reassignTo))) throw new HTTPException(400, { message: 'Invalid reassign_to person' })
+    return { ...db, persons: db.persons.filter(record => record.id !== id),
+      assets: db.assets.map(a => a.person_id === id ? { ...a, person_id: reassignTo! } : a) }
+  }, { action: 'person.delete', meta: { id, reassigned_to: reassignTo ?? null } })
   return c.json({ success: true })
 })
 
