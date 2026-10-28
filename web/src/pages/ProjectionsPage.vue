@@ -101,14 +101,14 @@ async function loadAssumptions(force = false) {
 const wealthCategories = computed(() =>
   categories.value.filter(c => c.type !== 'cash-inflow'),
 )
-// Assumption rows: one per wealth category, with asset overrides listed
 const assumptionRows = computed(() =>
-  wealthCategories.value.map(cat => {
-    const catAssets = assets.value.filter(a => a.category_id === cat.id)
-    const overrides = catAssets.filter(a => a.projected_yearly_growth !== null)
-    return { cat, overrides }
-  }),
+  wealthCategories.value.map(cat => ({
+    cat,
+    catAssets: assets.value.filter(asset => asset.category_id === cat.id),
+  })),
 )
+const rateMultiplier = computed(() => scenario.value === 'conservative' ? 0.5 : scenario.value === 'aggressive' ? 1.5 : 1)
+function effectiveRate(rate: number): number { return rate * rateMultiplier.value }
 
 // ── Category visibility ───────────────────────────────────────────────────────
 const hiddenCategories = ref<Set<string>>(new Set())
@@ -156,7 +156,7 @@ function projectionTableValue(series: (typeof visibleProjectionSeries.value)[num
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
-const pctFmt = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 1 })
+const pctFmt = new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 4 })
 
 type CategoryBreakdownRow = ProjectionsResponse['historical']['category_breakdown'][number]
 type AssetBreakdownRow = ProjectionsResponse['historical']['asset_breakdown'][number]
@@ -439,18 +439,18 @@ const categoryBreakdownGroups = computed(() => {
 
               <div
                 id="assumptions-panel"
-                class="wt-scrollbar-none max-h-[420px] overflow-y-auto px-4 pb-4"
+                class="px-4 pb-4 lg:max-h-[420px] lg:overflow-y-auto"
               >
                 <!-- Scenario reminder -->
                 <div class="text-xs text-gray-500 dark:text-zinc-400 mb-3 rounded-lg bg-gray-50 px-3 py-2 dark:bg-zinc-800/60">
                   <template v-if="scenario === 'conservative'">
-                    Displayed rates × 0.5 (half stored rates)
+                    Applied rates: 0.5× stored rates
                   </template>
                   <template v-else-if="scenario === 'aggressive'">
-                    Displayed rates × 1.5 (1.5× stored rates)
+                    Applied rates: 1.5× stored rates
                   </template>
                   <template v-else>
-                    Rates as stored in Admin → Categories / Assets
+                    Applied rates as stored in Admin → Categories / Assets
                   </template>
                 </div>
 
@@ -466,7 +466,7 @@ const categoryBreakdownGroups = computed(() => {
 
                 <div v-else class="flex flex-col gap-3">
                   <div
-                    v-for="{ cat, overrides } in assumptionRows"
+                    v-for="{ cat, catAssets } in assumptionRows"
                     :key="cat.id"
                     class="text-xs"
                   >
@@ -486,24 +486,24 @@ const categoryBreakdownGroups = computed(() => {
                     >
                       <span class="flex min-w-0 items-center gap-1.5">
                         <span class="w-2 h-2 rounded-full flex-shrink-0" :style="{ backgroundColor: cat.color }" />
-                        <span :class="['truncate font-medium text-gray-700 dark:text-zinc-300', effectiveHidden.has(cat.id) ? 'line-through' : '']">
+                        <span :class="['break-words font-medium text-gray-700 dark:text-zinc-300', effectiveHidden.has(cat.id) ? 'line-through' : '']">
                           {{ cat.name }}
                         </span>
                       </span>
                       <span class="shrink-0 font-mono tabular-nums text-gray-900 dark:text-zinc-100">
-                        {{ pctFmt.format(cat.projected_yearly_growth) }}/yr
+                        {{ pctFmt.format(effectiveRate(cat.projected_yearly_growth)) }}/yr
                       </span>
                     </button>
-                    <!-- Asset-level overrides -->
                     <div
-                      v-for="asset in overrides"
+                      v-for="asset in catAssets"
                       :key="asset.id"
-                      class="flex items-center justify-between gap-2 pl-4 py-0.5 text-gray-500 dark:text-zinc-400"
+                      class="min-w-0 border-t border-gray-100 py-2 pl-4 dark:border-zinc-800"
                     >
-                      <span class="truncate">↳ {{ asset.name }}</span>
-                      <span class="shrink-0 font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
-                        {{ pctFmt.format(asset.projected_yearly_growth!) }}/yr
-                      </span>
+                      <p class="m-0 break-words font-medium leading-4 text-gray-700 dark:text-zinc-300">{{ asset.name }}</p>
+                      <p class="m-0 mt-1 text-gray-500 dark:text-zinc-400">
+                        {{ asset.projected_yearly_growth === null ? 'Category rate' : 'Asset override' }} ·
+                        <span class="font-semibold tabular-nums">{{ pctFmt.format(effectiveRate(asset.projected_yearly_growth ?? cat.projected_yearly_growth)) }}/yr</span>
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -529,9 +529,9 @@ const categoryBreakdownGroups = computed(() => {
           </div>
 
           <!-- ── Detail panels below chart ───────────────────────────────── -->
-          <div class="flex flex-col gap-3">
+          <div data-testid="current-category-breakdown" class="flex flex-col gap-3">
             <div class="flex items-center justify-between">
-              <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Category Breakdown</p>
+              <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide">Current category breakdown</p>
               <button
                 v-if="anyHidden"
                 class="text-xs text-indigo-500 hover:text-indigo-700 font-medium border-0 bg-transparent cursor-pointer p-0"
@@ -540,6 +540,8 @@ const categoryBreakdownGroups = computed(() => {
                 Show all
               </button>
             </div>
+
+            <p class="text-xs text-gray-500 dark:text-zinc-400">Only nonzero current balances are shown. Future-only assets appear from their planned dates within the selected horizon. Assets with no observations or planned entries contribute no value.</p>
 
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1fr)]">
               <div
