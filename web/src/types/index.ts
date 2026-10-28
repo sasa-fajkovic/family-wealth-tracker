@@ -10,12 +10,18 @@ export interface Category {
   projected_yearly_growth: number  // decimal, e.g. 0.08 = 8% annual
   color: string                    // hex, e.g. '#6366f1'
   type: 'asset' | 'cash-inflow' | 'liability'
+  include_in_current_wealth?: boolean
+  include_in_projections?: boolean
 }
 
 export interface Asset {
   id: string                               // URL-safe slug, immutable after create
   name: string
   category_id: string
+  include_in_current_wealth?: boolean | null
+  include_in_projections?: boolean | null
+  effective_include_in_current_wealth?: boolean
+  effective_include_in_projections?: boolean
   projected_yearly_growth: number | null   // null = inherit from parent Category (NOT optional ?)
   notes?: string
   person_id: string                                // required; every asset must belong to a person
@@ -44,6 +50,8 @@ export interface Person {
 // Used by the API client create/update functions.
 
 export interface CreateCategoryPayload {
+  include_in_current_wealth?: boolean
+  include_in_projections?: boolean
   name: string
   projected_yearly_growth: number
   color: string
@@ -51,6 +59,8 @@ export interface CreateCategoryPayload {
 }
 
 export interface UpdateCategoryPayload {
+  include_in_current_wealth?: boolean
+  include_in_projections?: boolean
   name: string
   projected_yearly_growth: number
   color: string
@@ -58,6 +68,8 @@ export interface UpdateCategoryPayload {
 }
 
 export interface CreateAssetPayload {
+  include_in_current_wealth?: boolean | null
+  include_in_projections?: boolean | null
   name: string
   category_id: string
   projected_yearly_growth: number | null
@@ -68,6 +80,8 @@ export interface CreateAssetPayload {
 }
 
 export interface UpdateAssetPayload {
+  include_in_current_wealth?: boolean | null
+  include_in_projections?: boolean | null
   name: string
   category_id: string
   projected_yearly_growth: number | null
@@ -164,7 +178,9 @@ export interface ProjectionsResponse {
     asOf: string
     method: 'compound-growth-with-planned-interpolation'
     months: string[]
-    series: { category_id: string; category_name: string; color: string; values: number[] }[]
+    series: { category_id: string; category_name: string; color: string; values: number[]; available?: boolean[] }[]
     totals: number[]
+    available?: boolean[]
+    asset_metadata?: { asset_id: string; category_id: string; effective_include_in_current_wealth: boolean; effective_include_in_projections: boolean; projection_start_month: string | null }[]
   }
 }

@@ -8,12 +8,16 @@ const name = z.string().trim().min(1)
 const timestamp = z.string().datetime({ offset: true }).refine(value => Number.isFinite(Date.parse(value)), 'Invalid timestamp')
 export const categorySchema = z.object({
   id, name, projected_yearly_growth: growthSchema,
+  include_in_current_wealth: z.boolean().optional(),
+  include_in_projections: z.boolean().optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/), type: z.enum(['asset', 'cash-inflow', 'liability']),
 }).strict().refine(c => c.type !== 'liability' || c.projected_yearly_growth <= 0, {
   message: 'Liability growth must be zero or negative', path: ['projected_yearly_growth'],
 })
 export const assetSchema = z.object({
   id, name, category_id: id, person_id: id,
+  include_in_current_wealth: z.boolean().nullable().optional(),
+  include_in_projections: z.boolean().nullable().optional(),
   projected_yearly_growth: growthSchema.nullable(), notes: z.string().optional(), created_at: timestamp,
   show_from: monthSchema.optional(), show_until: monthSchema.optional(),
 }).strict().refine(a => !a.show_from || !a.show_until || a.show_from <= a.show_until, {

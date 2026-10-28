@@ -14,6 +14,8 @@ const baseSchema = z.object({
   projected_yearly_growth: z.number().finite().min(-1),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'color must be a 6-digit hex color'),
   type: z.enum(['asset', 'cash-inflow', 'liability']),
+  include_in_current_wealth: z.boolean().optional(),
+  include_in_projections: z.boolean().optional(),
 }).strict()
 
 const liabilityGrowthCheck = (d: { type: string; projected_yearly_growth: number }) =>
@@ -37,7 +39,7 @@ router.post('/', zValidator('json', createSchema, hook), async (c) => {
   const body = c.req.valid('json')
   const id = toSlug(body.name)
 
-  const category: Category = { id, ...body }
+  const category: Category = { include_in_current_wealth: true, include_in_projections: true, id, ...body }
   await mutateDb(
     (db) => {
       if (db.categories.find((cat) => cat.id === id)) {

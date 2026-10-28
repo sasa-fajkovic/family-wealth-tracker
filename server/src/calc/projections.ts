@@ -1,5 +1,6 @@
 // server/src/calc/projections.ts
 import type { Asset, Category, DataPoint } from '../models/index.js'
+import { resolveInclusion } from './inclusion.js'
 import { toMonthKey, monthRange } from './utils.js'
 
 // ── addOneMonth (private) ─────────────────────────────────────────────────────
@@ -65,6 +66,7 @@ export interface ProjectionSeries {
   category_name: string
   color: string
   values: number[]   // length === months.length
+  available: boolean[]
 }
 
 export interface ProjectionBlock {
@@ -73,6 +75,14 @@ export interface ProjectionBlock {
   months: string[]
   series: ProjectionSeries[]
   totals: number[]
+  available: boolean[]
+  asset_metadata: {
+    asset_id: string
+    category_id: string
+    effective_include_in_current_wealth: boolean
+    effective_include_in_projections: boolean
+    projection_start_month: string | null
+  }[]
 }
 
 // ── buildProjection ───────────────────────────────────────────────────────────
@@ -123,14 +133,26 @@ export function buildProjection(
 
   const months = monthRange(projStart, projEnd)  // length === years * 12
 
+  const asset_metadata = assets.map(asset => {
+    const inclusion = resolveInclusion(asset, categories.find(category => category.id === asset.category_id))
+    const points = dataPoints.filter(point => point.asset_id === asset.id)
+    const seeded = inclusion.effective_include_in_current_wealth && points.some(point => point.year_month <= asOf)
+    const firstFuture = points.filter(point => point.year_month > asOf).map(point => point.year_month).sort()[0]
+    return { asset_id: asset.id, category_id: asset.category_id, ...inclusion,
+      projection_start_month: inclusion.effective_include_in_projections ? seeded ? months[0] : firstFuture ?? null : null }
+  })
+  const metadataById = new Map(asset_metadata.map(metadata => [metadata.asset_id, metadata]))
+
   // 3. Build series: one per category (mirrors aggregateSummary categories.map pattern)
   const series: ProjectionSeries[] = categories.map(cat => {
-    const catAssets = assets.filter(a => a.category_id === cat.id)
+    const catAssets = assets.filter(a => a.category_id === cat.id && metadataById.get(a.id)?.effective_include_in_projections)
     const values: number[] = Array(months.length).fill(0)
+    const available: boolean[] = Array(months.length).fill(false)
 
     for (const asset of catAssets) {
       // Find this asset's projection seed
-      const assetDPs = dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth)
+      const metadata = metadataById.get(asset.id)!
+      const assetDPs = metadata.effective_include_in_current_wealth ? dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth) : []
       const planned = new Map<string, DataPoint>()
       for (const dp of dataPoints) {
         if (dp.asset_id !== asset.id || dp.year_month <= latestMonth) continue
@@ -182,12 +204,13 @@ export function buildProjection(
           v = clamp(v * (1 + monthlyRate))
         }
         if (!Number.isFinite(v)) throw new RangeError('Projection exceeds finite numeric range')
+        if (metadata.projection_start_month && months[i] >= metadata.projection_start_month) available[i] = true
         values[i] += v
         if (!Number.isFinite(values[i])) throw new RangeError('Projection exceeds finite numeric range')
       }
     }
 
-    return { category_id: cat.id, category_name: cat.name, color: cat.color, values }
+    return { category_id: cat.id, category_name: cat.name, color: cat.color, values, available }
   })
 
   // 4. totals[i] = sum across all categories for month i
@@ -196,5 +219,6 @@ export function buildProjection(
   )
 
   if (totals.some(value => !Number.isFinite(value))) throw new RangeError('Projection exceeds finite numeric range')
-  return { months, series, totals, asOf, method: 'compound-growth-with-planned-interpolation' }
+  const available = months.map((_, index) => series.some(category => category.available[index]))
+  return { months, series, totals, available, asset_metadata, asOf, method: 'compound-growth-with-planned-interpolation' }
 }

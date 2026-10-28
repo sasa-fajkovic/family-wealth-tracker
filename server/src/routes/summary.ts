@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { readDbAndDataPoints } from '../storage/index.js'
+import { resolveInclusion } from '../calc/inclusion.js'
 import { monthRange } from '../calc/utils.js'
 import { getRangeBounds } from '../calc/ranges.js'
 import { locfFill, aggregateSummary, observationCoverage } from '../calc/summary.js'
@@ -33,6 +34,7 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
 
   // Filter assets by category, then optionally by person
   let filteredAssets = db.assets.filter(a => relevantCategoryIds.has(a.category_id))
+  if (!trackingMode) filteredAssets = filteredAssets.filter(asset => resolveInclusion(asset, db.categories.find(category => category.id === asset.category_id)).effective_include_in_current_wealth)
   if (person) filteredAssets = filteredAssets.filter(a => a.person_id === person)
 
   // Compute date range from data points belonging to filtered assets only

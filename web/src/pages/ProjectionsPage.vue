@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getProjections, getCategories, getAssets, ApiError } from '../api/client'
 import type { ProjectionsResponse, ProjectionScenario, Category, Asset } from '../types/index'
-import { hasObservation } from '../utils/observations'
+import { visibleProjectionSeries as getVisibleProjectionSeries } from '../utils/projectionSeries'
 import ProjectionsChart from '../components/ProjectionsChart.vue'
 import ChartCard from '../components/ui/ChartCard.vue'
 import SelectButton from 'primevue/selectbutton'
@@ -109,6 +109,27 @@ const assumptionRows = computed(() =>
 )
 const rateMultiplier = computed(() => scenario.value === 'conservative' ? 0.5 : scenario.value === 'aggressive' ? 1.5 : 1)
 function effectiveRate(rate: number): number { return rate * rateMultiplier.value }
+function includeCurrent(asset: Asset, category: Category): boolean {
+  return asset.include_in_current_wealth ?? category.include_in_current_wealth ?? true
+}
+function includeProjection(asset: Asset, category: Category): boolean {
+  return asset.include_in_projections ?? category.include_in_projections ?? true
+}
+function projectionHint(asset: Asset, category: Category): string | null {
+  if (!includeProjection(asset, category)) return null
+  const metadata = data.value?.projection.asset_metadata?.find(item => item.asset_id === asset.id)
+  if (!metadata) return !includeCurrent(asset, category) ? 'Requires a future planned entry; current observations do not seed this projection.' : null
+  if (!metadata.projection_start_month) return !includeCurrent(asset, category)
+    ? 'No future planned entry. Current observations do not seed this projection.'
+    : 'No current observation or future planned entry to start a projection.'
+  if (!includeCurrent(asset, category)) {
+    const months = data.value?.projection.months ?? []
+    const lastMonth = months[months.length - 1]
+    const outside = lastMonth && metadata.projection_start_month > lastMonth ? ' (outside the selected horizon)' : ''
+    return `Starts ${metadata.projection_start_month}${outside}; current observations do not seed this projection.`
+  }
+  return null
+}
 
 // ── Category visibility ───────────────────────────────────────────────────────
 const hiddenCategories = ref<Set<string>>(new Set())
@@ -124,23 +145,12 @@ function showAll() { hiddenCategories.value = new Set() }
 // Effective hidden categories: user toggles + sensitivity toggle for liabilities
 const effectiveHidden = computed(() => {
   if (!excludeLiabilities.value) return hiddenCategories.value
-  const liabIds = new Set(
-    data.value?.historical.series
-      .filter(s => s.category_type === 'liability')
-      .map(s => s.category_id) ?? [],
-  )
+  const liabIds = new Set(categories.value.filter(category => category.type === 'liability').map(category => category.id))
   return new Set([...hiddenCategories.value, ...liabIds])
 })
 
 const anyHidden = computed(() => effectiveHidden.value.size > 0)
-const visibleProjectionSeries = computed(() => data.value?.historical.series
-  .filter(series => !effectiveHidden.value.has(series.category_id))
-  .map(series => ({
-    id: series.category_id,
-    name: series.category_name,
-    historical: series.values,
-    projected: data.value?.projection.series.find(item => item.category_id === series.category_id)?.values ?? [],
-  })) ?? [])
+const visibleProjectionSeries = computed(() => data.value ? getVisibleProjectionSeries(data.value, effectiveHidden.value) : [])
 const projectionTableRows = computed(() => {
   if (!data.value) return []
   return [
@@ -149,8 +159,7 @@ const projectionTableRows = computed(() => {
   ]
 })
 function projectionTableValue(series: (typeof visibleProjectionSeries.value)[number], phase: string, index: number) {
-  if (phase === 'Historical' && data.value && !hasObservation(data.value.historical, index, series.id)) return null
-  return (phase === 'Historical' ? series.historical : series.projected)[index] ?? 0
+  return (phase === 'Historical' ? series.historical : series.projected)[index] ?? null
 }
 
 
@@ -234,19 +243,17 @@ const MILESTONE_YEARS = [1, 3, 5, 10, 20, 30]
 const milestones = computed(() => {
   if (!data.value) return []
   const proj = data.value.projection
-  const allMonths = [...data.value.historical.months, ...proj.months]
-  const allTotals = [...data.value.historical.totals, ...proj.totals]
-
   return MILESTONE_YEARS
     .filter(y => y <= horizon.value)
     .map(years => {
       const targetYM = addYears(projectionAnchorYM.value, years)
-      const idx = allMonths.indexOf(targetYM)
+      const idx = proj.months.indexOf(targetYM)
+      const available = idx >= 0 && proj.available?.[idx] !== false
       return {
         label: `+${years}Y`,
         year: targetYM.slice(0, 4),
-        value: idx >= 0 ? fmt.format(allTotals[idx]) : 'N/A',
-        available: idx >= 0,
+        value: available ? fmt.format(proj.totals[idx]) : '—',
+        available,
       }
     })
 })
@@ -262,11 +269,10 @@ const customMilestoneValue = computed(() => {
   const years = targetYear - projectionAnchorYear.value
   if (years < 1 || years > 30) return null
   const targetYM = addYears(projectionAnchorYM.value, years)
-  const allMonths = [...data.value.historical.months, ...data.value.projection.months]
-  const allTotals = [...data.value.historical.totals, ...data.value.projection.totals]
-  const idx = allMonths.indexOf(targetYM)
+  const projection = data.value.projection
+  const idx = projection.months.indexOf(targetYM)
   if (idx < 0) return 'Outside range — extend horizon'
-  return fmt.format(allTotals[idx])
+  return projection.available?.[idx] === false ? '—' : fmt.format(projection.totals[idx])
 })
 
 // ── Category breakdown (sidebar) ──────────────────────────────────────────────
@@ -494,6 +500,7 @@ const categoryBreakdownGroups = computed(() => {
                         {{ pctFmt.format(effectiveRate(cat.projected_yearly_growth)) }}/yr
                       </span>
                     </button>
+                    <p class="m-0 mt-1 text-gray-500 dark:text-zinc-400">Category defaults · Current wealth: {{ cat.include_in_current_wealth === false ? 'excluded' : 'included' }} · Projections: {{ cat.include_in_projections === false ? 'excluded' : 'included' }}</p>
                     <div
                       v-for="asset in catAssets"
                       :key="asset.id"
@@ -504,6 +511,8 @@ const categoryBreakdownGroups = computed(() => {
                         {{ asset.projected_yearly_growth === null ? 'Category rate' : 'Asset override' }} ·
                         <span class="font-semibold tabular-nums">{{ pctFmt.format(effectiveRate(asset.projected_yearly_growth ?? cat.projected_yearly_growth)) }}/yr</span>
                       </p>
+                      <p v-if="asset.include_in_current_wealth != null || asset.include_in_projections != null" class="m-0 mt-1 text-gray-500 dark:text-zinc-400">Current wealth: {{ includeCurrent(asset, cat) ? 'included' : 'excluded' }} · Projections: {{ includeProjection(asset, cat) ? 'included' : 'excluded' }}</p>
+                      <p v-if="projectionHint(asset, cat)" class="m-0 mt-1 text-amber-700 dark:text-amber-300">{{ projectionHint(asset, cat) }}</p>
                     </div>
                   </div>
                 </div>
@@ -518,6 +527,7 @@ const categoryBreakdownGroups = computed(() => {
               </table></div>
             </details>
             <ChartCard title="Net Worth Projection">
+              <p v-if="data.projection.available && !data.projection.available.some(Boolean)" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">No projected values are available in this horizon.</p>
               <ProjectionsChart
                 :data="data"
                 :chart-type="chartType"

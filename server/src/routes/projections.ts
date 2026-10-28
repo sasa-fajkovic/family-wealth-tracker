@@ -4,6 +4,7 @@ import { HTTPException } from 'hono/http-exception'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { readDbAndDataPoints } from '../storage/index.js'
+import { resolveInclusion } from '../calc/inclusion.js'
 import { monthRange } from '../calc/utils.js'
 import { getRangeBounds } from '../calc/ranges.js'
 import { locfFill, aggregateSummary } from '../calc/summary.js'
@@ -35,16 +36,19 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   )
   const wealthAssets = db.assets.filter(a => wealthAssetIds.has(a.id))
   const wealthDataPoints = dataPoints.filter(dp => wealthAssetIds.has(dp.asset_id))
+  const historicalAssets = wealthAssets.filter(asset => resolveInclusion(asset, wealthCategories.find(category => category.id === asset.category_id)).effective_include_in_current_wealth)
+  const historicalAssetIds = new Set(historicalAssets.map(asset => asset.id))
+  const historicalPoints = wealthDataPoints.filter(point => historicalAssetIds.has(point.asset_id))
 
-  const { latestMonth, earliestMonth, currentMonth } = deriveMonthBounds(wealthDataPoints)
+  const { latestMonth, earliestMonth, currentMonth } = deriveMonthBounds(historicalPoints)
 
   // Historical portion: from earliest data month → today (clamped to currentMonth so
   // future-dated data points don't leak into the historical chart).
   // DO NOT reimplement LOCF or aggregation — reuse the tested functions from summary.ts
   const { startYM, endYM } = getRangeBounds('max', latestMonth, earliestMonth, currentMonth)
   const histMonths = monthRange(startYM, endYM)
-  const locfData = locfFill(histMonths, wealthDataPoints, wealthAssets)
-  const historical = aggregateSummary(wealthAssets, wealthCategories, locfData, histMonths, 'stock', wealthDataPoints)
+  const locfData = locfFill(histMonths, historicalPoints, historicalAssets)
+  const historical = aggregateSummary(historicalAssets, wealthCategories, locfData, histMonths, 'stock', historicalPoints)
 
   // Projection starts at "now"; future-dated (planned) data points override growth in their months.
   let projection

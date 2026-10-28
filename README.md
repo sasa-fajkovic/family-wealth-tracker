@@ -178,6 +178,8 @@ categories:
     projected_yearly_growth: 0.08    # decimal, e.g. 0.08 = 8% / yr
     color: '#6366f1'
     type: asset                      # 'asset' | 'cash-inflow' | 'liability'
+    include_in_current_wealth: true
+    include_in_projections: true
 persons:
   - id: alice
     name: Alice
@@ -187,6 +189,8 @@ assets:
     category_id: stocks
     person_id: alice
     projected_yearly_growth: null    # null = inherit from category; 0 is a valid override
+    include_in_current_wealth: null
+    include_in_projections: null
     notes: ''                        # optional
     created_at: 2024-01-15T10:00:00Z
 ```
@@ -213,6 +217,39 @@ assets:
   Future-only assets remain zero until their first planned month.
 - `asset.projected_yearly_growth !== null` overrides the category default.
   `0` is a valid override; do not check with truthiness.
+
+## Wealth and projection inclusion
+
+Categories have independent `include_in_current_wealth` and
+`include_in_projections` settings. Missing category settings mean `true`.
+Assets inherit each setting when its override is missing or `null`; explicit
+`true` or `false` overrides the category independently.
+
+| Current wealth | Projections | Behavior |
+|---|---|---|
+| Yes | Yes | Count recorded balances in wealth; project from the latest balance carried to the current month. |
+| Yes | No | Count balances in wealth and historical charts; exclude future projections. |
+| No | Yes | Exclude wealth estimates; projection starts at the first strictly future recorded value. |
+| No | No | Keep the records without contributing to wealth or projections. |
+
+Current-wealth inclusion classifies all recorded months, so changing it also
+recalculates historical wealth charts, allocation and period changes. Inventory,
+Monthly Update and data-point history remain accessible. The wealth chart's
+planned timeline follows current-wealth membership too.
+
+Projection-only assets ignore every past and current-month estimate. Their
+contribution stays zero until the first future point, with no interpolation
+before it. No future point means no projected contribution. Later planned values
+interpolate normally, then compound growth resumes. Availability metadata keeps
+these gaps distinct from an explicitly recorded zero. The same rules apply to
+liabilities. Income remains outside net worth and projections, and these settings
+do not change income history. Existing files need no migration.
+
+"Future" is relative to the current month. Past and current-month entries on a
+projection-only asset remain estimates. Once the holding is actually received,
+include it in current wealth or record the received cash as appropriate; avoid
+counting both representations. Planned entries do not automatically become
+current wealth, and settings are never reclassified as time passes.
 
 ## Observation and import behavior
 

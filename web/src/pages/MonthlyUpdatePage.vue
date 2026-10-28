@@ -657,8 +657,8 @@ async function saveAll(): Promise<void> {
         >
           <div class="flex items-start justify-between gap-2 mb-3">
             <div class="min-w-0">
-              <p class="font-medium text-sm text-gray-900 dark:text-zinc-100">{{ row.assetName }}</p>
-              <p class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+              <p class="break-words font-medium text-sm text-gray-900 dark:text-zinc-100">{{ row.assetName }}</p>
+              <p class="break-words text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
                 {{ row.categoryName }} · {{ row.personName }}
               </p>
               <span

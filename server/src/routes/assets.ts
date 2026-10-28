@@ -19,6 +19,8 @@ const baseSchema = z.object({
   category_id: z.string().min(1, 'category_id is required'),
   projected_yearly_growth: z.number().finite().min(-1).nullable(),
   notes: z.string().optional(),
+  include_in_current_wealth: z.boolean().nullable().optional(),
+  include_in_projections: z.boolean().nullable().optional(),
   person_id: z.string().min(1, 'person_id is required'),
   show_from: yearMonthInput,
   show_until: yearMonthInput,
@@ -53,7 +55,7 @@ router.post('/', zValidator('json', createSchema, hook), async (c) => {
   const body = c.req.valid('json')
   const id = toSlug(body.name)
 
-  const asset: Asset = { id, ...normalizeWindow(body), created_at: new Date().toISOString() }
+  const asset: Asset = { include_in_current_wealth: null, include_in_projections: null, id, ...normalizeWindow(body), created_at: new Date().toISOString() }
   await mutateDb(
     (db) => {
       if (!db.categories.find((cat) => cat.id === body.category_id)) {

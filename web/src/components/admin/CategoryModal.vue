@@ -7,6 +7,7 @@ import InputNumber from 'primevue/inputnumber'
 import ColorPicker from 'primevue/colorpicker'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
+import ToggleSwitch from 'primevue/toggleswitch'
 
 function toSlug(name: string): string {
   return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
@@ -51,6 +52,8 @@ const color = ref(props.mode === 'edit' ? props.item!.color : pickUniqueColor())
 const categoryType = ref<'asset' | 'cash-inflow' | 'liability'>(
   props.mode === 'edit' ? props.item!.type : 'asset'
 )
+const includeCurrent = ref(props.item?.include_in_current_wealth ?? true)
+const includeProjection = ref(props.item?.include_in_projections ?? true)
 const validationError = ref<string | null>(null)
 
 const slugPreview = computed(() => props.mode === 'create' ? toSlug(name.value) : props.item!.id)
@@ -91,6 +94,8 @@ function handleSubmit() {
       projected_yearly_growth: storedRate,
       color: color.value,
       type: categoryType.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
     })
   } else {
     props.onSave({
@@ -98,6 +103,8 @@ function handleSubmit() {
       projected_yearly_growth: storedRate,
       color: color.value,
       type: categoryType.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
     })
   }
 }
@@ -138,6 +145,13 @@ function handleSubmit() {
         <span class="text-sm font-medium text-gray-500 dark:text-zinc-400">{{ color }}</span>
       </div>
     </div>
+    <fieldset v-if="categoryType !== 'cash-inflow'" class="mb-4 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
+      <legend class="px-1 text-xs font-semibold text-gray-600 dark:text-zinc-300">Inclusion defaults</legend>
+      <div class="flex items-center gap-3"><ToggleSwitch v-model="includeCurrent" input-id="category-include-current" /><label for="category-include-current" class="text-sm">Include in current wealth</label></div>
+      <div class="flex items-center gap-3"><ToggleSwitch v-model="includeProjection" input-id="category-include-projections" /><label for="category-include-projections" class="text-sm">Include in projections</label></div>
+      <p v-if="!includeCurrent && includeProjection" class="m-0 text-xs text-gray-500 dark:text-zinc-400">Uses future-dated values in projections; current estimates are excluded.</p>
+    </fieldset>
+    <p v-else class="mb-4 text-xs text-gray-500 dark:text-zinc-400">Income is tracked separately on the Income page.</p>
     <p v-if="validationError" class="text-xs text-red-600 mt-2">{{ validationError }}</p>
     <p v-if="saveError" class="text-xs text-red-600 mt-2">{{ saveError }}</p>
     <template #footer>
