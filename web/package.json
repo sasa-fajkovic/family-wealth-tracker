@@ -9,7 +9,8 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:harness": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@primevue/themes": "^4.3.0",
