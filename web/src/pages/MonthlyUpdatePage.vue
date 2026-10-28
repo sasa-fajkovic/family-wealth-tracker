@@ -326,7 +326,7 @@ function navigateYear(delta: -1 | 1): void {
 
 function jumpToYear(year: number): void {
   const { month } = monthParts(selectedMonth.value)
-  void requestMonth(formatYearMonth(year, month))
+  void requestMonth(formatYearMonth(year, month)).then(resetYearInput)
 }
 
 function handleYearInput(e: Event): void {
@@ -487,41 +487,29 @@ async function saveAll(): Promise<void> {
       >
         History / Corrections
       </RouterLink>
-      <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:ml-auto sm:justify-end sm:gap-3">
-        <div class="inline-flex items-center" aria-label="Month navigation">
-          <Button
-            icon="pi pi-chevron-left"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Previous month"
-            @click="navigate(-1)"
-          />
+      <div class="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end" aria-label="Choose period">
+        <div class="wt-period-group" role="group" aria-label="Month navigation">
+          <button type="button" class="wt-period-arrow" aria-label="Previous month" @click="navigate(-1)">
+            <i class="pi pi-chevron-left" aria-hidden="true" />
+          </button>
           <Select
             v-model="selectedMonthNumber"
             :options="MONTH_OPTIONS"
             option-label="label"
             option-value="value"
             aria-label="Select month"
-            class="h-11 min-w-28 sm:min-w-40 wt-month-select"
+            class="wt-month-select"
           />
-          <Button
-            icon="pi pi-chevron-right"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Next month"
-            @click="navigate(1)"
-          />
+          <button type="button" class="wt-period-arrow" aria-label="Next month" @click="navigate(1)">
+            <i class="pi pi-chevron-right" aria-hidden="true" />
+          </button>
         </div>
-        <div class="inline-flex items-center" aria-label="Year navigation">
-          <Button
-            icon="pi pi-chevron-left"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Previous year"
-            @click="navigateYear(-1)"
-          />
-          <label class="inline-flex h-11 items-center gap-2 rounded-2xl bg-gray-100/80 p-1 pl-3 shadow-sm ring-1 ring-black/0 sm:gap-3 sm:pl-4 dark:bg-zinc-800/80">
-            <span class="hidden text-sm font-semibold text-gray-500 sm:inline dark:text-zinc-400">Year</span>
+        <div class="wt-period-group" role="group" aria-label="Year navigation">
+          <button type="button" class="wt-period-arrow" aria-label="Previous year" @click="navigateYear(-1)">
+            <i class="pi pi-chevron-left" aria-hidden="true" />
+          </button>
+          <label class="wt-period-year">
+            <span class="wt-period-year-label">Year</span>
             <input
               :value="selectedYearInput"
               type="number"
@@ -529,28 +517,17 @@ async function saveAll(): Promise<void> {
               :min="MIN_JUMP_YEAR"
               :max="MAX_JUMP_YEAR"
               aria-label="Jump to year"
-              class="h-10 w-16 rounded-xl border border-gray-200 bg-white px-2 text-center text-lg font-bold tabular-nums text-gray-900 shadow-sm outline-none transition [appearance:textfield] focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100 sm:w-24 sm:px-3 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-emerald-500 dark:focus:ring-emerald-500/20 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               @input="handleYearInput"
               @focus="selectYearInput"
               @blur="applyYearInput"
               @keydown.enter.prevent="applyYearInput"
             />
           </label>
-          <Button
-            icon="pi pi-chevron-right"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Next year"
-            @click="navigateYear(1)"
-          />
+          <button type="button" class="wt-period-arrow" aria-label="Next year" @click="navigateYear(1)">
+            <i class="pi pi-chevron-right" aria-hidden="true" />
+          </button>
         </div>
-        <Button
-          label="This month"
-          text
-          severity="secondary"
-          class="min-h-11"
-          @click="jumpToCurrentMonth"
-        />
+        <button type="button" class="wt-period-current" @click="jumpToCurrentMonth">This month</button>
       </div>
     </div>
 
