@@ -104,7 +104,8 @@ const wealthCategories = computed(() =>
 const assumptionRows = computed(() =>
   wealthCategories.value.map(cat => ({
     cat,
-    catAssets: assets.value.filter(asset => asset.category_id === cat.id),
+    catAssets: assets.value.filter(asset => asset.category_id === cat.id &&
+      (!asset.closed_at || asset.closed_at >= (data.value?.projection.asOf ?? todayYM.value))),
   })),
 )
 const rateMultiplier = computed(() => scenario.value === 'conservative' ? 0.5 : scenario.value === 'aggressive' ? 1.5 : 1)

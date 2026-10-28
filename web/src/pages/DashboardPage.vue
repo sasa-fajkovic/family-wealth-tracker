@@ -108,7 +108,9 @@ const personValue = computed({
 const eurFmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
 const inventoryCounts = computed(() => {
   const categoryTypes = new Map(categories.value.map(category => [category.id, category.type]))
-  return assets.value.filter(asset => !person.value || asset.person_id === person.value).reduce(
+  const now = new Date()
+  const month = data.value?.current_month ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  return assets.value.filter(asset => (!person.value || asset.person_id === person.value) && (!asset.closed_at || asset.closed_at >= month)).reduce(
     (acc, asset) => {
       const type = categoryTypes.get(asset.category_id) ?? 'asset'
       acc[type] += 1
@@ -119,6 +121,7 @@ const inventoryCounts = computed(() => {
 })
 
 // Empty-state detection: distinguish "no data at all" from "income data only"
+const hasTrackedItems = computed(() => assets.value.some(asset => !person.value || asset.person_id === person.value))
 const hasWealthAssets = computed(() => inventoryCounts.value.asset > 0 || inventoryCounts.value.liability > 0)
 const hasIncomeAssets = computed(() => inventoryCounts.value['cash-inflow'] > 0)
 const showIncomeOnlyHint = computed(() =>
@@ -176,7 +179,7 @@ function formatSignedEur(v: number) {
       <!-- Empty-state hints (after data loads) -->
       <template v-if="showIncomeOnlyHint">
         <div class="mb-4 rounded-lg border border-teal-200 dark:border-teal-700/60 bg-teal-50 dark:bg-teal-900/20 p-4">
-          <p class="text-sm font-semibold text-teal-900 dark:text-teal-100 mb-1">No wealth assets yet — only income data is tracked</p>
+          <p class="text-sm font-semibold text-teal-900 dark:text-teal-100 mb-1">No active wealth assets — only income data is currently tracked</p>
           <p class="text-sm text-teal-800 dark:text-teal-200 mb-3">
             Your imported data lives on the <RouterLink to="/income" class="underline font-medium">Income page</RouterLink>. To see net worth here, add assets (e.g. ETFs, vehicles, real estate) on the
             <RouterLink to="/admin" class="underline font-medium">Setup page</RouterLink> and record values on the
@@ -190,8 +193,9 @@ function formatSignedEur(v: number) {
       </template>
       <template v-else-if="showNoAssetsHint">
         <div class="mb-4 rounded-lg border border-amber-200 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/20 p-4">
-          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-1">No data to display</p>
-          <p class="text-sm text-amber-800 dark:text-amber-200 mb-3">
+          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-1">{{ hasTrackedItems ? 'No active items to display' : 'No data to display' }}</p>
+          <p v-if="hasTrackedItems" class="text-sm text-amber-800 dark:text-amber-200 mb-3">Review past entries in <RouterLink to="/data-points" class="underline font-medium">History / Corrections</RouterLink> or manage items in Setup.</p>
+          <p v-else class="text-sm text-amber-800 dark:text-amber-200 mb-3">
             Get started by adding categories, assets and persons on the
             <RouterLink to="/admin" class="underline font-medium">Setup page</RouterLink>, or import an existing dataset from there.
           </p>

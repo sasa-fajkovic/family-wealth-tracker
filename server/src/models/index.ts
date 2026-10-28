@@ -24,6 +24,7 @@ export interface Asset {
   notes?: string
   include_in_current_wealth?: boolean | null
   include_in_projections?: boolean | null
+  closed_at?: string | null
   person_id: string                        // required; every asset must belong to a person
   created_at: string                       // ISO 8601 timestamp, immutable after create
   show_from?: string                       // YYYY-MM, inclusive lower bound for Monthly Update visibility

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { hasRecordedClosingZero } from '../calc/closure.js'
 import type { Database, DataPoint } from './index.js'
 
 export const monthSchema = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/)
@@ -18,6 +19,7 @@ export const assetSchema = z.object({
   id, name, category_id: id, person_id: id,
   include_in_current_wealth: z.boolean().nullable().optional(),
   include_in_projections: z.boolean().nullable().optional(),
+  closed_at: monthSchema.nullable().optional(),
   projected_yearly_growth: growthSchema.nullable(), notes: z.string().optional(), created_at: timestamp,
   show_from: monthSchema.optional(), show_until: monthSchema.optional(),
 }).strict().refine(a => !a.show_from || !a.show_until || a.show_from <= a.show_until, {
@@ -94,7 +96,13 @@ export function validatePoints(points: DataPoint[], db?: Database, allowOrphans 
     if (!db) continue
     const asset = db.assets.find(a => a.id === point.asset_id)
     if (!asset && !allowOrphans) throw new ValidationError([{ row: index + 2, record: point.id, field: 'asset_id', message: 'Referenced asset does not exist' }])
+    if (asset?.closed_at && point.year_month > asset.closed_at && point.value !== 0) throw new ValidationError([{ row: index + 2, record: point.id, field: 'value', message: `Nonzero values after closing month ${asset.closed_at} require reopening the item first` }])
     const category = db.categories.find(c => c.id === asset?.category_id)
     if (category?.type === 'liability' && point.value > 0) throw new ValidationError([{ row: index + 2, record: point.id, field: 'value', message: 'Liability values must be zero or negative' }])
   }
+  if (db) for (const asset of db.assets) {
+    if (!asset.closed_at || db.categories.find(category => category.id === asset.category_id)?.type === 'cash-inflow') continue
+    if (!hasRecordedClosingZero(asset, points)) throw new ValidationError([{ record: asset.id, field: 'closed_at', message: `Record an explicit zero balance in closing month ${asset.closed_at} before closing; reopen the item before removing or changing its closing zero` }])
+  }
+
 }

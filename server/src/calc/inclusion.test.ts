@@ -40,7 +40,7 @@ test('projection-only ignores every past and asOf value without interpolating be
   const result = buildProjection([asset], [configured], [point('2024-01', 99999), point('2024-06', 88888), point('2024-09', 300), point('2024-11', 500)], 1, 1, '2024-06')
   assert.deepEqual(result.totals.slice(0, 6), [0, 0, 300, 400, 500, 500])
   assert.deepEqual(result.available.slice(0, 6), [false, false, true, true, true, true])
-  assert.deepEqual(result.asset_metadata[0], { asset_id: 'account', category_id: 'stock', effective_include_in_current_wealth: false, effective_include_in_projections: true, projection_start_month: '2024-09' })
+  assert.deepEqual(result.asset_metadata[0], { asset_id: 'account', category_id: 'stock', closed_at: null, effective_include_in_current_wealth: false, effective_include_in_projections: true, projection_start_month: '2024-09' })
 })
 
 test('projection-only explicit zero at the next-month boundary is available and subsequent plans interpolate', () => {

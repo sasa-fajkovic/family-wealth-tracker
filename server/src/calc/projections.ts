@@ -1,5 +1,6 @@
 // server/src/calc/projections.ts
 import type { Asset, Category, DataPoint } from '../models/index.js'
+import { isActiveInMonth } from './closure.js'
 import { resolveInclusion } from './inclusion.js'
 import { toMonthKey, monthRange } from './utils.js'
 
@@ -79,6 +80,7 @@ export interface ProjectionBlock {
   asset_metadata: {
     asset_id: string
     category_id: string
+    closed_at: string | null
     effective_include_in_current_wealth: boolean
     effective_include_in_projections: boolean
     projection_start_month: string | null
@@ -133,19 +135,19 @@ export function buildProjection(
 
   const months = monthRange(projStart, projEnd)  // length === years * 12
 
-  const asset_metadata = assets.map(asset => {
+  const asset_metadata = assets.filter(asset => isActiveInMonth(asset, asOf)).map(asset => {
     const inclusion = resolveInclusion(asset, categories.find(category => category.id === asset.category_id))
     const points = dataPoints.filter(point => point.asset_id === asset.id)
     const seeded = inclusion.effective_include_in_current_wealth && points.some(point => point.year_month <= asOf)
-    const firstFuture = points.filter(point => point.year_month > asOf).map(point => point.year_month).sort()[0]
-    return { asset_id: asset.id, category_id: asset.category_id, ...inclusion,
-      projection_start_month: inclusion.effective_include_in_projections ? seeded ? months[0] : firstFuture ?? null : null }
+    const firstFuture = points.filter(point => point.year_month > asOf && isActiveInMonth(asset, point.year_month)).map(point => point.year_month).sort()[0]
+    return { asset_id: asset.id, category_id: asset.category_id, closed_at: asset.closed_at ?? null, ...inclusion,
+      projection_start_month: inclusion.effective_include_in_projections && isActiveInMonth(asset, months[0]) ? seeded ? months[0] : firstFuture ?? null : null }
   })
   const metadataById = new Map(asset_metadata.map(metadata => [metadata.asset_id, metadata]))
 
   // 3. Build series: one per category (mirrors aggregateSummary categories.map pattern)
   const series: ProjectionSeries[] = categories.map(cat => {
-    const catAssets = assets.filter(a => a.category_id === cat.id && metadataById.get(a.id)?.effective_include_in_projections)
+    const catAssets = assets.filter(a => a.category_id === cat.id && isActiveInMonth(a, months[0]) && metadataById.get(a.id)?.effective_include_in_projections)
     const values: number[] = Array(months.length).fill(0)
     const available: boolean[] = Array(months.length).fill(false)
 
@@ -155,7 +157,7 @@ export function buildProjection(
       const assetDPs = metadata.effective_include_in_current_wealth ? dataPoints.filter(dp => dp.asset_id === asset.id && dp.year_month <= latestMonth) : []
       const planned = new Map<string, DataPoint>()
       for (const dp of dataPoints) {
-        if (dp.asset_id !== asset.id || dp.year_month <= latestMonth) continue
+        if (dp.asset_id !== asset.id || dp.year_month <= latestMonth || !isActiveInMonth(asset, dp.year_month)) continue
         const prev = planned.get(dp.year_month)
         if (!prev || Date.parse(dp.updated_at) > Date.parse(prev.updated_at)) planned.set(dp.year_month, dp)
       }
@@ -194,6 +196,7 @@ export function buildProjection(
       let prevV = seed
       let nextI = nextPlanned(0)
       for (let i = 0; i < months.length; i++) {
+        if (!isActiveInMonth(asset, months[i])) continue
         if (i === nextI) {
           v = prevV = plannedValues[i]!
           prevI = i

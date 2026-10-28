@@ -21,6 +21,7 @@ const baseSchema = z.object({
   notes: z.string().optional(),
   include_in_current_wealth: z.boolean().nullable().optional(),
   include_in_projections: z.boolean().nullable().optional(),
+  closed_at: yearMonth.nullable().optional(),
   person_id: z.string().min(1, 'person_id is required'),
   show_from: yearMonthInput,
   show_until: yearMonthInput,

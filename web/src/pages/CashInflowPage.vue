@@ -264,6 +264,19 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
 const displayData = computed(() => buildDisplayData(data.value))
 // The chart may run past today into planned months; the summary cards always use displayData.
 const chartDisplayData = computed(() => (plannedData.value ? buildDisplayData(plannedData.value) : displayData.value))
+const actualRange = computed(() => {
+  const months = data.value?.months ?? []
+  return months.length ? `${months[0]} – ${data.value?.current_month ?? months[months.length - 1]}` : null
+})
+const plannedTimeline = computed(() => {
+  const source = chartDisplayData.value
+  const current = data.value?.current_month
+  if (!source || !current || !showPlanned.value) return null
+  const future = source.months.map((month, index) => ({ month, index })).filter(item => item.month > current)
+  const observed = future.filter(item => source.asset_series.some(series => series.observation_status?.[item.index] === 'observed'))
+  if (!observed.length) return null
+  return { start: future[0].month, end: future[future.length - 1].month, count: observed.length }
+})
 
 const assetCategoryById = computed(() => new Map(assets.value.map(a => [a.id, a.category_id])))
 
@@ -306,10 +319,18 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
           <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <PlannedToggle />
+          <PlannedToggle :disabled="chartType === 'pie'" :description-id="chartType === 'pie' ? 'income-pie-help' : undefined" />
           <ChartTypeSelector :value="chartType" @change="setChartType" />
         </div>
       </div>
+
+      <p v-if="chartType === 'pie'" id="income-pie-help" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">Pie shows current-month income. Choose a timeline chart to show planned income.</p>
+      <p v-else-if="data && !loading && actualRange" class="mb-3 text-sm text-gray-600 dark:text-zinc-400" role="status">
+        Actual: {{ actualRange }} ·
+        <template v-if="!showPlanned">Planned income hidden.</template>
+        <template v-else-if="plannedTimeline">Planned timeline: {{ plannedTimeline.start }} – {{ plannedTimeline.end }} · {{ plannedTimeline.count }} {{ plannedTimeline.count === 1 ? 'month' : 'months' }} with planned entries.</template>
+        <template v-else>No planned income for the selected sources.</template>
+      </p>
 
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton v-model="personValue" :options="personOptions" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />
@@ -324,8 +345,9 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
 
       <!-- Summary cards -->
       <template v-if="data && !loading && !isEmpty">
+        <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Summary cards show actual income only.</p>
         <div
-          class="grid gap-3 mb-4"
+          class="grid grid-cols-1 gap-3 mb-4"
           :class="(person === null ? topSources.length > 0 : personSources.length > 0)
             ? 'lg:grid-cols-[minmax(20rem,36rem)_minmax(0,1fr)]'
             : 'sm:grid-cols-2 lg:max-w-xl'"
@@ -343,7 +365,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
           </div>
 
           <!-- "All" view: top 5 income sources, click-to-drill into a person -->
-          <div v-if="person === null && topSources.length > 0" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
+          <div v-if="person === null && topSources.length > 0" class="min-w-0 bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income by Person
             </p>
@@ -357,7 +379,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
                 @click="selectTopSource(row)"
               >
                 <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" :style="{ backgroundColor: row.color }" />
-                <span class="flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate">{{ row.category_name }}</span>
+                <span class="min-w-0 flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate">{{ row.category_name }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(row.value) }}</span>
                 <span class="text-xs text-gray-400 dark:text-zinc-500 tabular-nums w-12 text-right">{{ row.pct_of_total.toFixed(1) }}%</span>
               </button>
@@ -365,7 +387,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
           </div>
 
           <!-- Per-person view: full source list, click to enable/disable each source -->
-          <div v-else-if="person !== null && personSources.length > 0" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
+          <div v-else-if="person !== null && personSources.length > 0" class="min-w-0 bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income Sources
             </p>
@@ -386,7 +408,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
                   :class="row.disabled ? 'ring-1 ring-gray-400 dark:ring-zinc-500' : ''"
                 />
                 <span
-                  class="flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate"
+                  class="min-w-0 flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate"
                   :class="row.disabled ? 'line-through' : ''"
                 >{{ row.category_name }}</span>
                 <span

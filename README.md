@@ -191,6 +191,7 @@ assets:
     projected_yearly_growth: null    # null = inherit from category; 0 is a valid override
     include_in_current_wealth: null
     include_in_projections: null
+    closed_at: null
     notes: ''                        # optional
     created_at: 2024-01-15T10:00:00Z
 ```
@@ -250,6 +251,26 @@ projection-only asset remain estimates. Once the holding is actually received,
 include it in current wealth or record the received cash as appropriate; avoid
 counting both representations. Planned entries do not automatically become
 current wealth, and settings are never reclassified as time passes.
+
+## Closing an item
+
+`asset.closed_at` is an optional `YYYY-MM` closing month; missing or `null`
+means open. An item stays active through its closing month and disappears from
+current wealth breakdowns, active monthly entry and projection assumptions in
+the next month. Its raw records and historical series remain available.
+Inclusion settings stay unchanged, so closing a paid-off liability preserves its
+historical debt instead of removing it from past wealth calculations.
+
+Assets and liabilities require an explicitly recorded zero in the exact closing
+month. A carried-forward zero does not qualify. Closing never creates a balance
+or deletes observations. Income can close with nonzero final-month income;
+selected-period totals and source breakdowns still include that historical income.
+No item may have nonzero observations after closure, including planned values.
+
+A future closing month is allowed with a recorded planned zero for assets or
+liabilities. Forecasts run through that month and stop afterward. Reopen by
+clearing `closed_at` before changing/removing a required closing zero or recording
+later activity. These rules apply equally to edits, imports and startup checks.
 
 ## Observation and import behavior
 

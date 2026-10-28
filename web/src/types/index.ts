@@ -25,6 +25,7 @@ export interface Asset {
   projected_yearly_growth: number | null   // null = inherit from parent Category (NOT optional ?)
   notes?: string
   person_id: string                                // required; every asset must belong to a person
+  closed_at?: string | null               // YYYY-MM; active through this month
   created_at: string                       // ISO 8601 timestamp, immutable
   show_from?: string                       // YYYY-MM, inclusive lower bound (Monthly Update visibility)
   show_until?: string                      // YYYY-MM, inclusive upper bound (Monthly Update visibility)
@@ -80,6 +81,7 @@ export interface CreateAssetPayload {
 }
 
 export interface UpdateAssetPayload {
+  closed_at?: string | null
   include_in_current_wealth?: boolean | null
   include_in_projections?: boolean | null
   name: string
@@ -136,6 +138,7 @@ export interface SummaryResponse {
   monthly_coverage?: { observed: number; carried: number; missing: number; total: number }
   coverage: { observed: number; carried: number; missing: number; total: number }
   asset_series: {
+    closed_at: string | null
     asset_id: string
     asset_name: string
     category_id: string
@@ -148,6 +151,7 @@ export interface SummaryResponse {
     observation_status: ('observed' | 'carried' | 'missing')[]
   }[]
   asset_breakdown: {
+    closed_at: string | null
     asset_id: string
     asset_name: string
     category_id: string
@@ -181,6 +185,6 @@ export interface ProjectionsResponse {
     series: { category_id: string; category_name: string; color: string; values: number[]; available?: boolean[] }[]
     totals: number[]
     available?: boolean[]
-    asset_metadata?: { asset_id: string; category_id: string; effective_include_in_current_wealth: boolean; effective_include_in_projections: boolean; projection_start_month: string | null }[]
+    asset_metadata?: { asset_id: string; category_id: string; closed_at: string | null; effective_include_in_current_wealth: boolean; effective_include_in_projections: boolean; projection_start_month: string | null }[]
   }
 }

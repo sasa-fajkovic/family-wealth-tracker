@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import { readDbAndDataPoints } from '../storage/index.js'
+import { isActiveInMonth } from '../calc/closure.js'
 import { resolveInclusion } from '../calc/inclusion.js'
 import { monthRange } from '../calc/utils.js'
 import { getRangeBounds } from '../calc/ranges.js'
@@ -47,7 +48,7 @@ router.get('/', zValidator('query', querySchema, hook), async (c) => {
   const months = monthRange(startYM, endYM)
   const fillMode = trackingMode ? 'flow' : 'stock'
   const locfData = locfFill(months, dataPoints, filteredAssets, fillMode)
-  const monthlyAssets = db.assets.filter(asset => (!person || asset.person_id === person)
+  const monthlyAssets = db.assets.filter(asset => isActiveInMonth(asset, currentMonth) && (!person || asset.person_id === person)
     && (!asset.show_from || asset.show_from <= currentMonth) && (!asset.show_until || asset.show_until >= currentMonth))
   const monthly_coverage = observationCoverage(monthlyAssets, db.categories, dataPoints, currentMonth)
   const response = { monthly_coverage, ...aggregateSummary(filteredAssets, relevantCategories, locfData, months, fillMode, dataPoints), current_month: endYM }

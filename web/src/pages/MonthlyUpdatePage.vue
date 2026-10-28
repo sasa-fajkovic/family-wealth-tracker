@@ -33,6 +33,7 @@ interface MonthlyRow {
   rowError: string | null
   showFrom: string | null
   showUntil: string | null
+  closedAt: string | null
 }
 
 interface SaveSummary {
@@ -132,7 +133,7 @@ const selectedMonthNumber = computed({
 })
 
 const visibleRows = computed(() => rows.value.filter(row =>
-  (!row.showFrom || displayedMonth.value >= row.showFrom) && (!row.showUntil || displayedMonth.value <= row.showUntil)
+  (!row.showFrom || displayedMonth.value >= row.showFrom) && (!row.showUntil || displayedMonth.value <= row.showUntil) && (!row.closedAt || displayedMonth.value <= row.closedAt)
 ))
 const filteredRows = computed(() => visibleRows.value.filter(row => {
   if (filterPersonId.value && row.personId !== filterPersonId.value) return false
@@ -243,6 +244,7 @@ function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
         rowError: null,
         showFrom: asset.show_from ?? null,
         showUntil: asset.show_until ?? null,
+        closedAt: asset.closed_at ?? null,
       }
     })
     .sort((a, b) =>

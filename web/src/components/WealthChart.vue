@@ -27,7 +27,7 @@ import type { ChartType } from '../composables/useChartType'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
-import { plannedBarColor, plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
+import { plannedBarColor, plannedSegment, todayIndex } from '../utils/plannedChart'
 
 ChartJS.register(
   CategoryScale,
@@ -120,7 +120,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
         backgroundColor: color + '22',
         fill: true,
         tension: 0.2,
-        pointRadius: plannedPointRadius(today.value),
+        pointRadius: 3,
         pointHoverRadius: 5,
         borderWidth: 3,
         segment: plannedSegment(today.value),
@@ -150,7 +150,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
     backgroundColor: isArea ? s.color + '99' : s.color,
     fill: isArea,
     tension: 0.1,
-    pointRadius: 0,
+    pointRadius: (context) => context.dataIndex > today.value && hasObservation(props.data, context.dataIndex, s.category_id) ? 3 : 0,
     borderWidth: 2,
     // Liabilities: dashed line for visual distinction
     borderDash: s.category_type === 'liability' ? [5, 4] : undefined,
