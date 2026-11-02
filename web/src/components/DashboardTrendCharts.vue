@@ -18,6 +18,7 @@ import {
   type ActiveElement,
 } from 'chart.js'
 import type { SummaryResponse } from '../types/index'
+import { hasObservation } from '../utils/observations'
 import { useTheme } from '../composables/useTheme'
 import ChartCard from './ui/ChartCard.vue'
 import { buildTooltipDefaults, getChartTokens, wealthColors } from '../theme/tokens'
@@ -79,7 +80,7 @@ function valueAt(values: number[], index: number): number {
   return values[index] ?? 0
 }
 
-function trendChartData(label: string, chartLabels: string[], values: number[], color: string, today: number): ChartData<'line'> {
+function trendChartData(label: string, chartLabels: string[], values: (number | null)[], color: string, today: number): ChartData<'line'> {
   return {
     labels: chartLabels,
     datasets: [{
@@ -107,7 +108,7 @@ const netWorthData = computed((): ChartData<'line'> => {
     labels: labels.value,
     datasets: [{
       label: 'Net Worth',
-      data: props.data.totals,
+      data: props.data.totals.map((value, i) => hasObservation(props.data, i) ? value : null),
       borderColor: tokens.totalLine,
       backgroundColor: tokens.totalLine + '33',
       fill: true,
@@ -126,8 +127,9 @@ const cards = computed(() => [
     subtitle: 'Total asset value over time',
     valueClass: 'text-emerald-600 dark:text-emerald-400',
     currentValue: valueAt(assetValues.value, wealthToday.value),
-    hasData: assetValues.value.length > 0,
-    data: trendChartData('Assets', labels.value, assetValues.value, wealthColors.assets.emerald, wealthToday.value),
+    hasCurrentValue: hasObservation(props.data, wealthToday.value, undefined, 'asset'),
+    hasHistory: props.data.months.some((_, i) => hasObservation(props.data, i, undefined, 'asset')),
+    data: trendChartData('Assets', labels.value, assetValues.value.map((value, i) => hasObservation(props.data, i, undefined, 'asset') ? value : null), wealthColors.assets.emerald, wealthToday.value),
     kind: 'assets' as CardKind,
     labelsRef: () => labels.value,
   },
@@ -136,8 +138,9 @@ const cards = computed(() => [
     subtitle: 'Total debt balance over time',
     valueClass: 'text-red-600 dark:text-red-400',
     currentValue: valueAt(liabilityValues.value, wealthToday.value),
-    hasData: liabilityValues.value.length > 0,
-    data: trendChartData('Liabilities', labels.value, liabilityValues.value, wealthColors.liabilities.rose, wealthToday.value),
+    hasCurrentValue: hasObservation(props.data, wealthToday.value, undefined, 'liability'),
+    hasHistory: props.data.months.some((_, i) => hasObservation(props.data, i, undefined, 'liability')),
+    data: trendChartData('Liabilities', labels.value, liabilityValues.value.map((value, i) => hasObservation(props.data, i, undefined, 'liability') ? value : null), wealthColors.liabilities.rose, wealthToday.value),
     kind: 'liabilities' as CardKind,
     labelsRef: () => labels.value,
   },
@@ -146,8 +149,9 @@ const cards = computed(() => [
     subtitle: 'Income over time',
     valueClass: 'text-teal-600 dark:text-teal-400',
     currentValue: valueAt(cashInflowValues.value, inflowToday.value),
-    hasData: cashInflowValues.value.length > 0,
-    data: trendChartData('Income', cashInflowLabels.value, cashInflowValues.value, wealthColors.cashInflow.teal, inflowToday.value),
+    hasCurrentValue: hasObservation(props.cashInflowData, inflowToday.value, undefined, 'cash-inflow'),
+    hasHistory: props.cashInflowData.months.some((_, i) => hasObservation(props.cashInflowData, i, undefined, 'cash-inflow')),
+    data: trendChartData('Income', cashInflowLabels.value, cashInflowValues.value.map((value, i) => hasObservation(props.cashInflowData, i, undefined, 'cash-inflow') ? value : null), wealthColors.cashInflow.teal, inflowToday.value),
     kind: 'income' as CardKind,
     labelsRef: () => cashInflowLabels.value,
   },
@@ -218,15 +222,16 @@ const cardOptionsByKind = computed<Record<CardKind, ChartOptions<'line'>>>(() =>
         :key="card.title"
         :title="card.title"
         :subtitle="card.subtitle"
+        :data-testid="`dashboard-${card.kind}-trend`"
       >
         <template #actions>
           <p :class="['shrink-0 text-sm font-bold tabular-nums', card.valueClass]">
-            {{ eurFmt.format(card.currentValue) }}
+            {{ card.hasCurrentValue ? eurFmt.format(card.currentValue) : '—' }}
           </p>
         </template>
         <div class="h-[320px]">
           <Line
-            v-if="card.hasData"
+            v-if="card.hasHistory"
             :data="card.data"
             :options="cardOptionsByKind[card.kind]"
           />

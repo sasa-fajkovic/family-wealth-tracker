@@ -1,0 +1,57 @@
+import { expect, test } from '@playwright/test'
+
+test('required controls retain their selected option when clicked again', async ({ page, request }) => {
+  const personResponse = await request.post('/api/v1/persons', { data: { name: `Selection person ${Date.now()}` } })
+  expect(personResponse.ok()).toBeTruthy()
+  const person = await personResponse.json()
+  const categoryResponse = await request.post('/api/v1/categories', { data: { name: `Selection category ${Date.now()}`, type: 'asset', projected_yearly_growth: 0, color: '#14b8a6' } })
+  expect(categoryResponse.ok()).toBeTruthy()
+  const category = await categoryResponse.json()
+  const assetResponse = await request.post('/api/v1/assets', { data: { name: `Selection asset ${Date.now()}`, person_id: person.id, category_id: category.id, projected_yearly_growth: null } })
+  expect(assetResponse.ok()).toBeTruthy()
+  const asset = await assetResponse.json()
+  const current = new Date()
+  const month = `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}`
+  expect((await request.post('/api/v1/data-points', { data: { asset_id: asset.id, year_month: month, value: 100 } })).ok()).toBeTruthy()
+  const invalid: string[] = []
+  page.on('request', req => {
+    const url = new URL(req.url())
+    if (url.pathname.startsWith('/api/') && [...url.searchParams.values()].some(value => value === 'null')) invalid.push(url.toString())
+  })
+  async function repeat(group: string, name: string) {
+    const button = page.getByLabel(group).getByRole('button', { name, exact: true })
+    await button.click()
+    await expect(button).toHaveAttribute('aria-pressed', 'true')
+    await button.click()
+    await expect(button).toHaveAttribute('aria-pressed', 'true')
+  }
+  for (const path of ['/', '/analytics', '/income']) {
+    await page.goto(path)
+    await page.getByRole('button', { name: '1Y', exact: true }).click()
+    const range = page.getByRole('button', { name: '3Y', exact: true })
+    await range.click()
+    await range.click()
+    await expect(range).toHaveAttribute('aria-pressed', 'true')
+    const selected = page.getByRole('button', { name: person.name, exact: true })
+    await selected.click()
+    await selected.click()
+    await expect(selected).toHaveAttribute('aria-pressed', 'true')
+    const all = page.getByRole('button', { name: 'All', exact: true })
+    await all.click()
+    await all.click()
+    await expect(all).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByText(/Could not load data/)).toHaveCount(0)
+  }
+  await page.goto('/analytics')
+  await repeat('Balance grouping', 'Categories')
+  await repeat('Category detail type', 'Assets')
+  await page.goto('/income')
+  await repeat('Chart type', 'Line')
+  await page.goto('/projections')
+  await repeat('Projection horizon', '10Y')
+  await repeat('Projection rate sensitivity', '1× rates')
+  await repeat('Chart type', 'Line')
+  await expect(page.getByText(/Could not load data/)).toHaveCount(0)
+  expect(await page.evaluate(() => localStorage.getItem('wealthtrack-range'))).toBe('3y')
+  expect(invalid).toEqual([])
+})

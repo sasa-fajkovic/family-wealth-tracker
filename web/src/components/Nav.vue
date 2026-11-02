@@ -80,7 +80,7 @@ function mobileLinkClass(active: boolean) {
     >WealthTrack</RouterLink>
 
     <!-- Desktop nav -->
-    <div class="hidden sm:flex items-center gap-6">
+    <div class="hidden lg:flex items-center gap-6">
       <RouterLink
         v-for="link in links"
         :key="link.to"
@@ -114,7 +114,7 @@ function mobileLinkClass(active: boolean) {
     </div>
 
     <!-- Mobile controls: theme toggle + hamburger, both 44px -->
-    <div class="flex sm:hidden items-center gap-1">
+    <div class="flex lg:hidden items-center gap-1">
       <button
         class="wt-touch-target border-0 bg-transparent cursor-pointer rounded"
         :class="theme === 'dark' ? 'text-zinc-400' : 'text-gray-500'"
@@ -127,6 +127,8 @@ function mobileLinkClass(active: boolean) {
         :icon="open ? 'pi pi-times' : 'pi pi-bars'"
         text
         :aria-label="open ? 'Close navigation menu' : 'Open navigation menu'"
+        :aria-expanded="open"
+        aria-controls="mobile-navigation"
         class="wt-touch-target"
         @click="open = !open"
       />
@@ -135,6 +137,7 @@ function mobileLinkClass(active: boolean) {
     <!-- Mobile dropdown; wt-nav-menu adds safe-area bottom padding -->
     <div
       v-if="open"
+      id="mobile-navigation"
       class="wt-nav-menu absolute top-14 left-0 right-0 border-b z-50 flex flex-col py-2 transition-colors"
       :class="theme === 'dark' ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-gray-200'"
     >

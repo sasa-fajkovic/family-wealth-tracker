@@ -60,9 +60,9 @@ export const plannedMarkerPlugin: Plugin = {
     ctx.fillStyle = dark ? 'rgba(161,161,170,0.85)' : 'rgba(107,114,128,0.85)'
     ctx.textBaseline = 'top'
     ctx.textAlign = 'right'
-    ctx.fillText('Today', midX - 5, chartArea.top + 4)
+    ctx.fillText('Current month', midX - 5, chartArea.top + 4)
     ctx.textAlign = 'left'
-    ctx.fillText('Planned', midX + 5, chartArea.top + 4)
+    ctx.fillText('Future entries', midX + 5, chartArea.top + 4)
     ctx.restore()
   },
 }

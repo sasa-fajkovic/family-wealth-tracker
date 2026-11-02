@@ -7,6 +7,7 @@ import InputNumber from 'primevue/inputnumber'
 import ColorPicker from 'primevue/colorpicker'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
+import ToggleSwitch from 'primevue/toggleswitch'
 
 function toSlug(name: string): string {
   return name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
@@ -51,6 +52,8 @@ const color = ref(props.mode === 'edit' ? props.item!.color : pickUniqueColor())
 const categoryType = ref<'asset' | 'cash-inflow' | 'liability'>(
   props.mode === 'edit' ? props.item!.type : 'asset'
 )
+const includeCurrent = ref(props.item?.include_in_current_wealth ?? true)
+const includeProjection = ref(props.item?.include_in_projections ?? true)
 const validationError = ref<string | null>(null)
 
 const slugPreview = computed(() => props.mode === 'create' ? toSlug(name.value) : props.item!.id)
@@ -72,11 +75,11 @@ function handleSubmit() {
     return
   }
   if (rateInput.value === null) {
-    validationError.value = 'Growth rate is required'
+    validationError.value = 'Annual projection rate is required'
     return
   }
   if (categoryType.value === 'liability' && rateInput.value > 0) {
-    validationError.value = 'Liability growth rate must be zero or negative'
+    validationError.value = 'Liability annual projection rate must be zero or negative'
     return
   }
   if (slugConflict.value) {
@@ -87,11 +90,12 @@ function handleSubmit() {
   const storedRate = rateInput.value / 100
   if (props.mode === 'create') {
     props.onSave({
-      id: slugPreview.value,
       name: name.value.trim(),
       projected_yearly_growth: storedRate,
       color: color.value,
       type: categoryType.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
     })
   } else {
     props.onSave({
@@ -99,6 +103,8 @@ function handleSubmit() {
       projected_yearly_growth: storedRate,
       color: color.value,
       type: categoryType.value,
+      include_in_current_wealth: includeCurrent.value,
+      include_in_projections: includeProjection.value,
     })
   }
 }
@@ -128,9 +134,11 @@ function handleSubmit() {
       <Select v-model="categoryType" :options="TYPE_OPTIONS" option-label="label" option-value="value" class="w-full" />
     </div>
     <div class="mb-3">
-      <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Growth Rate %</label>
+      <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Annual projection rate (%)</label>
       <InputNumber v-model="rateInput" suffix=" %" :min-fraction-digits="0" :max-fraction-digits="4" :max="isLiability ? 0 : undefined" class="w-full" placeholder="e.g. 8" />
-      <p v-if="isLiability" class="text-xs text-orange-500 mt-1">Liabilities grow in debt — use zero or a negative rate (e.g. -5 if being paid off).</p>
+      <p v-if="categoryType !== 'cash-inflow'" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">An assumed annual rate for future balances, not a measured return. Items inherit it unless overridden.</p>
+      <p v-if="isLiability" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Zero keeps the projected debt balance unchanged; a negative rate assumes it shrinks annually. This does not record repayments or income.</p>
+      <p v-if="categoryType === 'cash-inflow'" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">This rate is stored but unused for income. Income totals use recorded entries; future entries are plans.</p>
     </div>
     <div class="mb-4">
       <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Color</label>
@@ -139,6 +147,14 @@ function handleSubmit() {
         <span class="text-sm font-medium text-gray-500 dark:text-zinc-400">{{ color }}</span>
       </div>
     </div>
+    <fieldset v-if="categoryType !== 'cash-inflow'" class="mb-4 space-y-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
+      <legend class="px-1 text-xs font-semibold text-gray-600 dark:text-zinc-300">Inclusion defaults</legend>
+      <div class="flex items-center gap-3"><ToggleSwitch v-model="includeCurrent" input-id="category-include-current" /><label for="category-include-current" class="text-sm">Include in current wealth</label></div>
+      <div class="flex items-center gap-3"><ToggleSwitch v-model="includeProjection" input-id="category-include-projections" /><label for="category-include-projections" class="text-sm">Include in projections</label></div>
+      <p class="m-0 text-xs text-gray-500 dark:text-zinc-400">Current wealth inclusion also applies to historical wealth totals. Item overrides take precedence; recorded entries remain accessible.</p>
+      <p v-if="!includeCurrent && includeProjection" class="m-0 text-xs text-gray-500 dark:text-zinc-400">Starts projections at the first entry after the current month. Earlier estimates are excluded; no future entry means no projected contribution.</p>
+    </fieldset>
+    <p v-else class="mb-4 text-xs text-gray-500 dark:text-zinc-400">Income is tracked separately on the Income page.</p>
     <p v-if="validationError" class="text-xs text-red-600 mt-2">{{ validationError }}</p>
     <p v-if="saveError" class="text-xs text-red-600 mt-2">{{ saveError }}</p>
     <template #footer>

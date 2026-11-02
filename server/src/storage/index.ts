@@ -1,12 +1,14 @@
-import { readFile, mkdir, writeFile, readdir, unlink } from 'node:fs/promises'
-import { dirname, join, basename } from 'node:path'
+import { readFile, mkdir, writeFile, readdir, unlink, open } from 'node:fs/promises'
+import { dirname, join, basename, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { parse, stringify } from 'yaml'
 import writeFileAtomic from 'write-file-atomic'
+import { validationException } from '../util/validationException.js'
 import { dbMutex } from './mutex.js'
 import type { Database, DataPoint } from '../models/index.js'
 import { auditLog } from '../audit/index.js'
 import { encodeDataPoints, decodeDataPoints } from './csv.js'
+import { validateDatabase, validatePoints } from '../models/validation.js'
 
 // STOR-04: configurable via DATA_FILE env var, default is /data/database.yaml
 export const DB_PATH = process.env.DATA_FILE ?? '/data/database.yaml'
@@ -88,10 +90,7 @@ async function _readCsv(): Promise<DataPoint[]> {
   try {
     return decodeDataPoints(raw)
   } catch (err) {
-    console.error(
-      `Error: Failed to parse data points at ${CSV_PATH}: ${(err as Error).message}`
-    )
-    process.exit(1)
+    throw new Error(`Failed to parse data points at ${CSV_PATH}: ${(err as Error).message}`)
   }
 }
 
@@ -106,13 +105,14 @@ async function _writeCsv(points: DataPoint[]): Promise<void> {
 // Read YAML config under the mutex.
 // If the file cannot be parsed (corrupt YAML), crash with a clear error (Decision D-01).
 export async function readDb(): Promise<Database> {
-  return dbMutex.runExclusive(_readYaml)
+  return dbMutex.runExclusive(async () => { await recoverPendingTransaction(); return _readYaml() })
 }
 
 // Read both YAML config and CSV data points under a single mutex acquisition.
 // Callers that need a consistent snapshot of both (summary, projections) should use this.
 export async function readDbAndDataPoints(): Promise<{ db: Database; dataPoints: DataPoint[] }> {
   return dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     const db = await _readYaml()
     const dataPoints = await _readCsv()
     return { db, dataPoints }
@@ -125,31 +125,40 @@ export async function readDbAndDataPoints(): Promise<{ db: Database; dataPoints:
 // runExclusive serialises all concurrent callers so reads never race with writes — STOR-02.
 export async function mutateDb(
   fn: (db: Database) => Database,
-  audit?: { action: string; meta?: Record<string, unknown> },
+  audit?: { action: string; meta?: Record<string, unknown> | (() => Record<string, unknown>) },
 ): Promise<void> {
   await dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     const db = await _readYaml()
     const updated = fn(db)
+    try {
+      validateDatabase(updated)
+      validatePoints(await _readCsv(), updated, true)
+    } catch (error) { throw validationException(error, 'Invalid state') }
     await _writeYaml(updated)
-    if (audit) await auditLog(audit.action, audit.meta)
+    if (audit) await auditLog(audit.action, typeof audit.meta === 'function' ? audit.meta() : audit.meta)
   })
 }
 
 // Read data points from CSV under the mutex.
 export async function readDataPoints(): Promise<DataPoint[]> {
-  return dbMutex.runExclusive(_readCsv)
+  return dbMutex.runExclusive(async () => { await recoverPendingTransaction(); return _readCsv() })
 }
 
 // Apply a pure mutation to the CSV data points under the mutex.
 export async function mutateDataPoints(
-  fn: (points: DataPoint[]) => DataPoint[],
-  audit?: { action: string; meta?: Record<string, unknown> },
+  fn: (points: DataPoint[], db: Database) => DataPoint[],
+  audit?: { action: string; meta?: Record<string, unknown> | (() => Record<string, unknown>) },
 ): Promise<void> {
   await dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     const points = await _readCsv()
-    const updated = fn(points)
+    const db = await _readYaml()
+    const updated = fn(points, db)
+    try { validatePoints(updated, db, true) }
+    catch (error) { throw validationException(error, 'Invalid state') }
     await _writeCsv(updated)
-    if (audit) await auditLog(audit.action, audit.meta)
+    if (audit) await auditLog(audit.action, typeof audit.meta === 'function' ? audit.meta() : audit.meta)
   })
 }
 
@@ -157,15 +166,84 @@ export async function mutateDataPoints(
 // Required for operations that change both files (e.g. asset cascade delete).
 export async function mutateDbAndDataPoints(
   fn: (db: Database, points: DataPoint[]) => { db: Database; points: DataPoint[] },
-  audit?: { action: string; meta?: Record<string, unknown> },
+  audit?: { action: string; meta?: Record<string, unknown> | (() => Record<string, unknown>) },
 ): Promise<void> {
   await dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     const db = await _readYaml()
     const points = await _readCsv()
     const result = fn(db, points)
-    await _writeYaml(result.db)
-    await _writeCsv(result.points)
-    if (audit) await auditLog(audit.action, audit.meta)
+    validateDatabase(result.db)
+    validatePoints(result.points, result.db, true)
+    await _writePair(result.db, result.points)
+    if (audit) await auditLog(audit.action, typeof audit.meta === 'function' ? audit.meta() : audit.meta)
   })
 }
 
+
+export const TRANSACTION_PATH = DB_PATH + '.transaction.json'
+
+type TransactionPayload = {
+  version: 1
+  targets: { yaml: string; csv: string }
+  before: { yaml: string | null; csv: string | null }
+  after: { yaml: string; csv: string }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const handle = await open(dirname(path), 'r')
+  try { await handle.sync() } finally { await handle.close() }
+}
+
+async function readOptional(path: string): Promise<string | null> {
+  try { return await readFile(path, 'utf8') } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+function transactionHash(payload: TransactionPayload): string {
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+}
+
+export async function recoverPendingTransaction(): Promise<void> {
+  const raw = await readOptional(TRANSACTION_PATH)
+  if (raw === null) return
+  const transaction = JSON.parse(raw) as TransactionPayload & { hash: string }
+  const { hash, ...payload } = transaction
+  if (payload.version !== 1 || payload.targets?.yaml !== resolve(DB_PATH) || payload.targets?.csv !== resolve(CSV_PATH) ||
+    typeof payload.after?.yaml !== 'string' || typeof payload.after?.csv !== 'string' ||
+    !(payload.before?.yaml === null || typeof payload.before?.yaml === 'string') ||
+    !(payload.before?.csv === null || typeof payload.before?.csv === 'string') || transactionHash(payload) !== hash) {
+    throw new Error('Invalid pending database transaction; manual recovery required')
+  }
+  const db = validateDatabase(parse(payload.after.yaml))
+  validatePoints(decodeDataPoints(payload.after.csv), db, true)
+  const currentYaml = await readOptional(DB_PATH)
+  const currentCsv = await readOptional(CSV_PATH)
+  if (![payload.before.yaml, payload.after.yaml].includes(currentYaml) || ![payload.before.csv, payload.after.csv].includes(currentCsv)) {
+    throw new Error('Live files conflict with pending database transaction; manual recovery required')
+  }
+  await mkdir(dirname(CSV_PATH), { recursive: true })
+  await writeFileAtomic(DB_PATH, payload.after.yaml, { fsync: true })
+  await syncDirectory(DB_PATH)
+  await writeFileAtomic(CSV_PATH, payload.after.csv, { fsync: true })
+  await syncDirectory(CSV_PATH)
+  await unlink(TRANSACTION_PATH)
+  await syncDirectory(TRANSACTION_PATH)
+}
+
+async function _writePair(db: Database, points: DataPoint[]): Promise<void> {
+  await _snapshotPriorState(DB_PATH)
+  await _snapshotPriorState(CSV_PATH)
+  const payload: TransactionPayload = {
+    version: 1,
+    targets: { yaml: resolve(DB_PATH), csv: resolve(CSV_PATH) },
+    before: { yaml: await readOptional(DB_PATH), csv: await readOptional(CSV_PATH) },
+    after: { yaml: stringify(db, { lineWidth: 0 }), csv: encodeDataPoints(points) },
+  }
+  await mkdir(dirname(DB_PATH), { recursive: true })
+  await writeFileAtomic(TRANSACTION_PATH, JSON.stringify({ ...payload, hash: transactionHash(payload) }), { fsync: true, mode: 0o600 })
+  await syncDirectory(TRANSACTION_PATH)
+  await recoverPendingTransaction()
+}
