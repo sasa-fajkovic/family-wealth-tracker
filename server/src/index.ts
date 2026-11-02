@@ -68,6 +68,6 @@ await pruneAuditLogs()
 
 const PORT = Number(process.env.PORT ?? 8080)
 
-serve({ fetch: app.fetch, port: PORT }, () => {
+serve({ fetch: app.fetch, port: PORT, hostname: process.env.HOST }, () => {
   console.log(`WealthTrack listening on port ${PORT}`)
 })

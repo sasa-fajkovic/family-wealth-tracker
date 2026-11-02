@@ -138,6 +138,7 @@ All persistent data lives in `/data` inside the container (mounted as a Docker v
 | Variable | Default | Description |
 |---|---|---|
 | `PORT` | `8080` | HTTP port |
+| `HOST` | All interfaces | Bind address; browser tests use `127.0.0.1` to keep disposable test data on loopback. |
 | `DATA_FILE` | `/data/database.yaml` | Path to the YAML database |
 | `DATA_POINTS_FILE` | `/data/datapoints.csv` | Path to the CSV data points file |
 | `LOGS_DIR` | `/data/logs` | Directory for audit logs |
