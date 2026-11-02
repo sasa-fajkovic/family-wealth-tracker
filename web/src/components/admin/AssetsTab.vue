@@ -223,7 +223,7 @@ async function handleForceConfirm() {
           </div>
         </template>
       </Column>
-      <Column field="growthFormatted" header="Growth Rate">
+      <Column field="growthFormatted" header="Annual projection rate (%)">
         <template #body="{ data: row }">
           <span
             class="inline-flex rounded-full px-2 py-1 text-xs font-semibold tabular-nums"
@@ -232,7 +232,7 @@ async function handleForceConfirm() {
               : row.projected_yearly_growth < 0
                 ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300'
                 : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'"
-          >{{ row.projected_yearly_growth === null ? `${((categoryMap[row.category_id]?.projected_yearly_growth ?? 0) * 100).toFixed(1)}% inherited` : row.growthFormatted }}</span>
+          >{{ categoryType === 'cash-inflow' ? 'Not used for income' : row.projected_yearly_growth === null ? `${((categoryMap[row.category_id]?.projected_yearly_growth ?? 0) * 100).toFixed(1)}% inherited` : row.growthFormatted }}</span>
         </template>
       </Column>
       <Column field="notes" header="Notes">
@@ -248,9 +248,9 @@ async function handleForceConfirm() {
       <Column header="Actions" style="width: 8rem">
         <template #body="{ data: row }">
           <div class="flex items-center justify-end gap-1">
-            <Button icon="pi pi-pencil" text size="small" :aria-label="`Edit asset ${row.name}`"
+            <Button icon="pi pi-pencil" text size="small" :aria-label="`Edit ${tabLabel.toLowerCase()} ${row.name}`"
               @click="() => { const orig = rows.find(r => r.id === row.id); if (orig) modal = { mode: 'edit', item: orig } }" />
-            <Button icon="pi pi-trash" text size="small" severity="danger" :aria-label="`Delete asset ${row.name}`"
+            <Button icon="pi pi-trash" text size="small" severity="danger" :aria-label="`Delete ${tabLabel.toLowerCase()} ${row.name}`"
               @click="handleDeleteClick(row)" />
           </div>
         </template>
@@ -269,7 +269,7 @@ async function handleForceConfirm() {
       </template>
       <template v-else-if="deleteState?.phase === 'force'">
         <p class="text-sm text-gray-700 dark:text-zinc-300">
-          This asset has <strong>{{ deleteState.dataPointCount }}</strong> data point(s) that will also be permanently deleted. This cannot be undone.
+          This item has <strong>{{ deleteState.dataPointCount }}</strong> recorded entries that will also be permanently deleted. This cannot be undone.
         </p>
       </template>
       <template #footer>

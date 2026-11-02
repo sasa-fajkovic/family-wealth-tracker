@@ -37,6 +37,8 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const retryCount = ref(0)
 const inventoryLoading = ref(true)
+const referenceError = ref<string | null>(null)
+let referenceSequence = 0
 const { referenceDataVersion, dataPointsVersion } = useDataRefresh()
 const router = useRouter()
 
@@ -48,17 +50,20 @@ function onTrendChartClick(payload: { kind: 'netWorth' | 'assets' | 'liabilities
 }
 
 async function loadReferenceData() {
+  const sequence = ++referenceSequence
   inventoryLoading.value = true
   try {
     const [personList, assetList, categoryList] = await Promise.all([getPersons(), getAssets(), getCategories()])
+    if (sequence !== referenceSequence) return
+    referenceError.value = null
     persons.value = personList
     assets.value = assetList
     categories.value = categoryList
     if (person.value && !personList.some(p => p.id === person.value)) person.value = null
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error loading setup data'
+    if (sequence === referenceSequence) referenceError.value = err instanceof ApiError ? err.message : 'Unexpected error loading setup data'
   } finally {
-    inventoryLoading.value = false
+    if (sequence === referenceSequence) inventoryLoading.value = false
   }
 }
 
@@ -71,7 +76,6 @@ let loadSequence = 0
 async function loadSummary() {
   const sequence = ++loadSequence
   loading.value = true
-  error.value = null
   try {
     const personId = person.value ?? undefined
     const [result, inflowResult, plannedResult, plannedInflowResult] = await Promise.all([
@@ -81,6 +85,7 @@ async function loadSummary() {
       showPlanned.value ? getSummary(range.value, personId, true, true) : null,
     ])
     if (sequence !== loadSequence) return
+    error.value = null
     data.value = result
     cashInflowData.value = inflowResult
     plannedData.value = plannedResult
@@ -125,10 +130,10 @@ const hasTrackedItems = computed(() => assets.value.some(asset => !person.value 
 const hasWealthAssets = computed(() => inventoryCounts.value.asset > 0 || inventoryCounts.value.liability > 0)
 const hasIncomeAssets = computed(() => inventoryCounts.value['cash-inflow'] > 0)
 const showIncomeOnlyHint = computed(() =>
-  !inventoryLoading.value && !loading.value && !hasWealthAssets.value && hasIncomeAssets.value,
+  !inventoryLoading.value && !referenceError.value && !loading.value && !hasWealthAssets.value && hasIncomeAssets.value,
 )
 const showNoAssetsHint = computed(() =>
-  !inventoryLoading.value && !loading.value && !hasWealthAssets.value && !hasIncomeAssets.value,
+  !inventoryLoading.value && !referenceError.value && !loading.value && !hasWealthAssets.value && !hasIncomeAssets.value,
 )
 
 function deltaClass(v: number) {
@@ -146,6 +151,7 @@ function formatSignedEur(v: number) {
       <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton
+            :allow-empty="false"
             v-model="range"
             :options="RANGES"
             option-label="label"
@@ -160,6 +166,7 @@ function formatSignedEur(v: number) {
       <!-- Person filter -->
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton
+          :allow-empty="false"
           v-model="personValue"
           :options="personOptions"
           option-label="label"
@@ -172,8 +179,13 @@ function formatSignedEur(v: number) {
       <div v-if="error" class="mb-4">
         <Message severity="error" class="w-full">Could not load data. Check your connection.</Message>
         <div class="mt-2">
-          <Button label="Retry loading data" link @click="retryCount++" />
+          <Button label="Retry loading data" link :disabled="loading" @click="retryCount++" />
         </div>
+      </div>
+
+      <div v-if="referenceError" class="mb-4">
+        <Message severity="error" class="w-full">Could not load people and items: {{ referenceError }}</Message>
+        <Button label="Retry people and items" link :disabled="inventoryLoading" @click="loadReferenceData" />
       </div>
 
       <!-- Empty-state hints (after data loads) -->
@@ -205,7 +217,7 @@ function formatSignedEur(v: number) {
 
       <p v-if="data && !loading && data.months.length" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">
         As of {{ data.current_month ?? data.months[data.months.length - 1] }} · Period {{ data.months[0] }} to {{ data.months[data.months.length - 1] }}
-        <span v-if="data.monthly_coverage?.carried"> · {{ data.monthly_coverage.carried }} entries use earlier observations</span>
+        <span v-if="data.monthly_coverage?.carried"> · {{ data.monthly_coverage.carried }} {{ data.monthly_coverage.carried === 1 ? 'item uses an earlier recorded value' : 'items use earlier recorded values' }}</span>
       </p>
 
       <!-- Metric cards row -->
@@ -218,6 +230,7 @@ function formatSignedEur(v: number) {
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Gross Assets</p>
             <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ hasObservation(data, data.months.length - 1, undefined, 'asset') ? eurFmt.format(data.gross_assets) : '—' }}</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Asset values before subtracting debt</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Liabilities</p>
@@ -234,11 +247,11 @@ function formatSignedEur(v: number) {
       </template>
 
       <div v-if="data?.monthly_coverage && !loading" class="mb-4 text-sm text-gray-600 dark:text-zinc-400">
-        <RouterLink :to="{ path: '/monthly-update', query: person ? { person } : {} }" class="underline font-medium">Monthly completion: {{ data.monthly_coverage.observed }}/{{ data.monthly_coverage.total }} observed</RouterLink>
-        <span> · {{ data.monthly_coverage.carried }} carried · {{ data.monthly_coverage.missing }} missing</span>
-        <RouterLink v-if="data.monthly_coverage.observed < data.monthly_coverage.total" :to="{ path: '/monthly-update', query: { month: data.current_month ?? data.months[data.months.length - 1], ...(person ? { person } : {}), missing: '1' } }" class="ml-2 underline font-medium">Update missing</RouterLink>
-        <span v-if="showPlanned"> · planned values shown in charts</span>
-        <span> · Tracked: {{ inventoryCounts.asset }} assets, {{ inventoryCounts.liability }} liabilities, {{ inventoryCounts['cash-inflow'] }} income sources</span>
+        <RouterLink :to="{ path: '/monthly-update', query: person ? { person } : {} }" class="underline font-medium">Monthly entries: {{ data.monthly_coverage.observed }}/{{ data.monthly_coverage.total }} recorded</RouterLink>
+        <span> · {{ data.monthly_coverage.carried }} using an earlier recorded value · {{ data.monthly_coverage.missing }} with no value available</span>
+        <RouterLink v-if="data.monthly_coverage.observed < data.monthly_coverage.total" :to="{ path: '/monthly-update', query: { month: data.current_month ?? data.months[data.months.length - 1], ...(person ? { person } : {}), missing: '1' } }" class="ml-2 underline font-medium">Update missing entries</RouterLink>
+        <span v-if="showPlanned"> · future entries shown in charts</span>
+        <span v-if="!inventoryLoading && !referenceError"> · Tracked: {{ inventoryCounts.asset }} assets, {{ inventoryCounts.liability }} liabilities, {{ inventoryCounts['cash-inflow'] }} income sources</span>
       </div>
 
       <!-- Loading skeleton -->

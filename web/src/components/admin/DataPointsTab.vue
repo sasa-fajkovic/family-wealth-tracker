@@ -28,6 +28,9 @@ const categories = ref<Category[]>([])
 const persons = ref<Person[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const referenceError = ref<string | null>(null)
+const referenceLoading = ref(false)
+let referenceSequence = 0
 // Bump to reload data points after CRUD without resetting page
 const dataRetryCount = ref(0)
 const page = ref(0)
@@ -83,8 +86,12 @@ function formatCreatedAt(iso: string) {
 // ── Data loading ──────────────────────────────────────────────────────────────
 
 async function loadReferenceData() {
+  const sequence = ++referenceSequence
+  referenceLoading.value = true
   try {
     const [ast, cats, ppl] = await Promise.all([getAssets(), getCategories(), getPersons()])
+    if (sequence !== referenceSequence) return
+    referenceError.value = null
     assets.value = ast
     categories.value = cats
     persons.value = ppl
@@ -92,15 +99,18 @@ async function loadReferenceData() {
     if (filterCategoryId.value && !cats.some(c => c.id === filterCategoryId.value)) filterCategoryId.value = null
     if (filterAssetId.value && !ast.some(a => a.id === filterAssetId.value)) filterAssetId.value = null
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Unexpected error'
+    if (sequence === referenceSequence) referenceError.value = e instanceof ApiError ? e.message : 'Unexpected error'
+  } finally {
+    if (sequence === referenceSequence) referenceLoading.value = false
   }
 }
 
 onMounted(loadReferenceData)
 
+let dataSequence = 0
 async function loadDataPoints() {
+  const sequence = ++dataSequence
   loading.value = true
-  error.value = null
   try {
     const fetchParams = {
       limit: PAGE_SIZE,
@@ -110,18 +120,21 @@ async function loadDataPoints() {
       category_id: filterCategoryId.value ?? undefined,
     }
     let result = await getDataPointsPage(fetchParams)
+    if (sequence !== dataSequence) return
     // If current page is now empty but data still exists (e.g. deleted last item on page),
     // jump to the last available page.
     if (result.items.length === 0 && result.total > 0 && page.value > 0) {
       page.value = Math.max(0, Math.ceil(result.total / PAGE_SIZE) - 1)
       result = await getDataPointsPage({ ...fetchParams, offset: page.value * PAGE_SIZE })
     }
+    if (sequence !== dataSequence) return
+    error.value = null
     rows.value = result.items
     totalCount.value = result.total
   } catch (e) {
-    error.value = e instanceof ApiError ? e.message : 'Unexpected error'
+    if (sequence === dataSequence) error.value = e instanceof ApiError ? e.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === dataSequence) loading.value = false
   }
 }
 
@@ -166,7 +179,7 @@ async function handleDelete(id: string) {
 
 function openConfirm(id: string) {
   confirm.require({
-    message: 'Delete this data point? This cannot be undone.',
+    message: 'Delete this recorded entry? This cannot be undone.',
     header: 'Confirm Delete',
     icon: 'pi pi-exclamation-triangle',
     acceptProps: { severity: 'danger', label: 'Delete' },
@@ -207,8 +220,8 @@ function openConfirm(id: string) {
         :options="filteredAssetOptions"
         option-label="name"
         option-value="id"
-        placeholder="All assets"
-        aria-label="Filter by asset"
+        placeholder="All items"
+        aria-label="Filter by item"
         show-clear
         class="w-44"
         @update:model-value="applyFilter"
@@ -224,11 +237,16 @@ function openConfirm(id: string) {
       />
     </div>
 
+    <div v-if="referenceError" class="mb-4">
+      <Message severity="warn" class="w-full">Could not load item names and filters: {{ referenceError }}</Message>
+      <Button label="Retry item names" link size="small" :disabled="referenceLoading" @click="loadReferenceData" />
+    </div>
+
     <!-- Error -->
     <div v-if="error" class="mb-4">
       <Message severity="error" class="w-full">Could not load data: {{ error }}</Message>
       <div class="mt-2">
-        <Button label="Retry" link size="small" @click="dataRetryCount++" />
+        <Button label="Retry" link size="small" :disabled="loading" @click="dataRetryCount++" />
       </div>
     </div>
 
@@ -241,7 +259,7 @@ function openConfirm(id: string) {
       class="flex flex-col items-center justify-center py-16 text-center text-gray-400 dark:text-zinc-500"
     >
       <i class="pi pi-chart-line text-4xl mb-4 opacity-40" />
-      <p class="text-base font-medium mb-1">No data points yet</p>
+      <p class="text-base font-medium mb-1">No recorded entries yet</p>
       <p class="text-sm">Use Monthly Update to record values, then review them here.</p>
     </div>
 
@@ -254,7 +272,7 @@ function openConfirm(id: string) {
           class="flex flex-col items-center justify-center py-10 text-center text-gray-400 dark:text-zinc-500"
         >
           <i class="pi pi-filter-slash text-3xl mb-3 opacity-40" />
-          <p class="text-sm">No data points match the current filters.</p>
+          <p class="text-sm">No recorded entries match the current filters.</p>
         </div>
         <div v-else class="space-y-2">
           <div
@@ -286,7 +304,7 @@ function openConfirm(id: string) {
                 text
                 severity="danger"
                 class="min-h-11 min-w-11"
-                :aria-label="`Delete data point for ${row.assetName} in ${row.year_month}`"
+                :aria-label="`Delete recorded entry for ${row.assetName} in ${row.year_month}`"
                 @click="openConfirm(row.id)"
               />
             </div>
@@ -306,11 +324,11 @@ function openConfirm(id: string) {
           <template #empty>
             <div class="flex flex-col items-center justify-center py-10 text-center text-gray-400 dark:text-zinc-500">
               <i class="pi pi-filter-slash text-3xl mb-3 opacity-40" />
-              <p class="text-sm">No data points match the current filters.</p>
+              <p class="text-sm">No recorded entries match the current filters.</p>
             </div>
           </template>
-          <Column field="year_month" header="Date" />
-          <Column field="assetName" header="Asset" />
+          <Column field="year_month" header="Entry month" />
+          <Column field="assetName" header="Item" />
           <Column field="categoryName" header="Category" />
           <Column field="personName" header="Person" />
           <Column field="value" header="Value">
@@ -319,7 +337,7 @@ function openConfirm(id: string) {
           <Column field="notes" header="Notes">
             <template #body="{ data: row }">{{ row.notes ?? '—' }}</template>
           </Column>
-          <Column field="addedAt" header="Added" />
+          <Column field="addedAt" header="Created at (local time)" />
           <Column header="Actions" style="width: 5rem">
             <template #body="{ data: row }">
               <div class="flex items-center justify-end gap-1">
@@ -328,7 +346,7 @@ function openConfirm(id: string) {
                   text
                   size="small"
                   severity="danger"
-                  :aria-label="`Delete data point for ${row.assetName} in ${row.year_month}`"
+                  :aria-label="`Delete recorded entry for ${row.assetName} in ${row.year_month}`"
                   @click="openConfirm(row.id)"
                 />
               </div>

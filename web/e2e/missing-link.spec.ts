@@ -23,10 +23,10 @@ test('dashboard links to missing entries for its person and current month', asyn
   })
   await page.goto('/')
   await page.getByRole('button', { name: person.name, exact: true }).click()
-  const link = page.getByRole('link', { name: 'Update missing' })
+  const link = page.getByRole('link', { name: 'Update missing entries' })
   await expect(link).toHaveAttribute('href', /month=2026-05/)
   await link.click()
-  await expect(page.getByLabel('Missing only')).toBeChecked()
+  await expect(page.getByLabel('No entry only')).toBeChecked()
   await expect(page.getByRole('spinbutton', { name: new RegExp(`Value for ${missing.name} in 2026-05`) }).last()).toBeVisible()
   await expect(page.getByRole('spinbutton', { name: new RegExp(`Value for ${saved.name}`) })).toHaveCount(0)
   await expect(page.getByRole('spinbutton', { name: new RegExp(`Value for ${otherAsset.name}`) })).toHaveCount(0)
@@ -34,7 +34,9 @@ test('dashboard links to missing entries for its person and current month', asyn
 
 test('projection rate sensitivity labels explain assumptions and retain API scenarios', async ({ page }) => {
   await page.goto('/projections')
-  await expect(page.getByText(/Income is not invested, and expenses, taxes and inflation are not modeled/)).toBeVisible()
+  await expect(page.getByText(/Income is not invested; expenses, taxes and inflation are not included/)).toBeVisible()
+  await expect(page.getByText(/Values change evenly between known values and future entries within the selected horizon/)).toBeVisible()
+  await expect(page.getByText(/After the last future entry in the horizon, or when there are none, assumed annual rates compound/)).toBeVisible()
   for (const [label, scenario] of [['0.5× rates', 'conservative'], ['1× rates', 'base'], ['1.5× rates', 'aggressive']] as const) {
     const response = page.waitForResponse(result => result.url().includes(`/projections?`) && result.url().includes(`scenario=${scenario}`))
     await page.getByRole('button', { name: label, exact: true }).click()

@@ -91,11 +91,11 @@ function handleSubmit() {
   const from = showFrom.value.trim()
   const until = showUntil.value.trim()
   if (from && !yearMonthRe.test(from)) {
-    validationError.value = 'Visible from must be YYYY-MM'
+    validationError.value = 'Monthly entry from must be YYYY-MM'
     return
   }
   if (until && !yearMonthRe.test(until)) {
-    validationError.value = 'Visible until must be YYYY-MM'
+    validationError.value = 'Monthly entry through must be YYYY-MM'
     return
   }
   if (props.mode === 'edit' && isClosed.value && !yearMonthRe.test(closeMonth.value)) {
@@ -103,7 +103,7 @@ function handleSubmit() {
     return
   }
   if (from && until && from > until) {
-    validationError.value = 'Visible from must be on or before Visible until'
+    validationError.value = 'Monthly entry from must be on or before Monthly entry through'
     return
   }
   validationError.value = null
@@ -161,8 +161,11 @@ function handleSubmit() {
       <Select v-model="categoryId" :options="categories" option-label="name" option-value="id" class="w-full" />
     </div>
     <div class="mb-3">
-      <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Growth Rate % (optional — leave blank to inherit from category)</label>
+      <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Annual projection rate (%) — optional</label>
       <InputNumber v-model="rateInput" suffix=" %" :min-fraction-digits="0" :max-fraction-digits="4" class="w-full" placeholder="e.g. 8" />
+      <p v-if="selectedCategory?.type !== 'cash-inflow'" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Leave blank to inherit the category rate; 0% overrides it. This is an assumption for future balances, not a measured return.</p>
+      <p v-if="selectedCategory?.type === 'liability'" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Zero keeps the projected debt balance unchanged; a negative rate assumes it shrinks annually. This does not record repayments or income.</p>
+      <p v-if="selectedCategory?.type === 'cash-inflow'" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">This rate is stored but unused for income. Income totals use recorded entries; future entries are plans.</p>
     </div>
     <div class="mb-3">
       <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Notes (optional)</label>
@@ -174,7 +177,7 @@ function handleSubmit() {
     </div>
     <div class="mb-3 grid grid-cols-2 gap-3">
       <div>
-        <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Visible from (optional)</label>
+        <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Monthly entry from (optional)</label>
         <input
           type="month"
           v-model="showFrom"
@@ -183,7 +186,7 @@ function handleSubmit() {
         />
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Visible until (optional)</label>
+        <label class="block text-xs font-medium text-gray-500 dark:text-zinc-400 mb-1">Monthly entry through (optional)</label>
         <input
           type="month"
           v-model="showUntil"
@@ -192,10 +195,11 @@ function handleSubmit() {
         />
       </div>
     </div>
+    <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">These dates only control which months show this item in Monthly Update. They do not close it or change wealth totals, history, or projections.</p>
     <details v-if="mode === 'edit' || selectedCategory?.type !== 'cash-inflow'" class="mb-4 rounded-lg border border-gray-200 p-3 dark:border-zinc-700">
       <summary class="cursor-pointer text-sm font-semibold">Advanced</summary>
       <template v-if="selectedCategory?.type !== 'cash-inflow'">
-      <p class="mt-2 text-xs text-gray-500 dark:text-zinc-400">Inherit uses the selected category's setting.</p>
+      <p class="mt-2 text-xs text-gray-500 dark:text-zinc-400">Inherit uses the selected category's setting. Current wealth inclusion also applies to historical wealth totals; recorded entries remain accessible.</p>
       <fieldset class="mt-3 rounded-lg border border-gray-200 p-3 dark:border-zinc-700"><legend class="px-1 text-sm font-medium">Current wealth</legend>
         <div class="flex flex-wrap gap-x-4 gap-y-2 text-sm">
           <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeCurrent" type="radio" class="accent-emerald-600" name="asset-current-inclusion" :value="null" /> Inherit ({{ selectedCategory?.include_in_current_wealth === false ? 'excluded' : 'included' }})</label>
@@ -210,7 +214,7 @@ function handleSubmit() {
           <label class="inline-flex min-h-11 items-center gap-2"><input v-model="includeProjection" type="radio" class="accent-emerald-600" name="asset-projection-inclusion" :value="false" /> Exclude</label>
         </div>
       </fieldset>
-      <p v-if="futureOnly" class="mb-0 mt-3 text-xs text-gray-500 dark:text-zinc-400">Uses future-dated values in projections; current estimates are excluded.</p>
+      <p v-if="futureOnly" class="mb-0 mt-3 text-xs text-gray-500 dark:text-zinc-400">Starts projections at the first entry after the current month. Earlier estimates are excluded; no future entry means no projected contribution.</p>
       </template>
       <div v-if="mode === 'edit'" class="mt-4 border-t border-gray-200 pt-3 dark:border-zinc-700">
         <label class="inline-flex min-h-11 items-center gap-2 text-sm font-medium"><input v-model="isClosed" type="checkbox" class="accent-emerald-600" /> Closed</label>

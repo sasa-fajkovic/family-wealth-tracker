@@ -165,7 +165,7 @@ async function submit(force = false) {
         <ul v-if="preview.changes"><li v-for="(change, kind) in preview.changes" :key="kind">{{ kind }}: {{ change.added }} added, {{ change.replaced }} replaced, {{ change.removed }} removed</li></ul>
         <details v-for="group in [...preview.conflicts, ...preview.orphans]" :key="group.kind"><summary class="cursor-pointer">{{ group.kind }} ({{ group.ids.length }})</summary><ul><li v-for="id in group.ids" :key="id">{{ id }}</li></ul></details>
         <p v-if="preview.conflicts.length" class="text-red-700">Resolve these conflicts in the file before importing.</p>
-        <p v-if="preview.needs_force" class="text-amber-700">Applying this import will remove or orphan existing data.</p>
+        <p v-if="preview.needs_force" class="text-amber-700">Some entries will reference items absent from the resulting data. Those entries are kept but excluded from summaries until matching items are restored.</p>
       </div>
 
       <div v-if="conflict" class="border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 rounded-md p-3 text-xs space-y-2">

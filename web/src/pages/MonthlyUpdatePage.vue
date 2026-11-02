@@ -98,6 +98,8 @@ const filterType = ref<'asset' | 'cash-inflow' | 'liability' | null>(null)
 const filterMissingOnly = ref(false)
 
 const initLoading = ref(true)
+const referenceReady = ref(false)
+let queryApplied = false
 const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
@@ -188,13 +190,13 @@ async function loadMonthData(): Promise<void> {
   const loadSeq = ++monthLoadSeq
   const month = selectedMonth.value
   loading.value = true
-  error.value = null
   try {
     const [currDps, allDps] = await Promise.all([
       getDataPointsForMonth(month),
       getAllDataPoints(),
     ])
     if (loadSeq !== monthLoadSeq || selectedMonth.value !== month || (rowsMonth.value === month && dirty.value)) return
+    error.value = null
     buildRows(currDps, allDps.filter(dp => dp.year_month < month))
     rowsMonth.value = month
   } catch (e) {
@@ -254,34 +256,36 @@ function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
     )
 }
 
-onMounted(async () => {
-  document.title = 'Monthly Update — WealthTrack'
+async function initialize() {
   initLoading.value = true
-  error.value = null
   try {
-    const queryMonth = readQueryString('month')
+    const queryMonth = queryApplied ? null : readQueryString('month')
     if (queryMonth && isValidYearMonth(queryMonth)) {
       selectedMonth.value = queryMonth
       selectedYearInput.value = String(monthParts(queryMonth).year)
     }
     await loadReferenceData()
-    const queryPerson = readQueryString('person')
-    if (queryPerson && persons.value.some(p => p.id === queryPerson)) {
-      filterPersonId.value = queryPerson
-    }
-    const queryCategory = readQueryString('category')
-    if (queryCategory && categories.value.some(c => c.id === queryCategory)) {
-      filterCategoryId.value = queryCategory
-    }
-    const queryMissing = readQueryString('missing')
-    filterMissingOnly.value = queryMissing === '1'
-    const queryType = readQueryString('type')
-    if (queryType === 'asset' || queryType === 'cash-inflow' || queryType === 'liability') {
-      filterType.value = queryType
-    }
-    if (queryMonth || queryPerson || queryCategory || queryType || queryMissing) {
-      // Strip query so a refresh doesn't re-apply (and a manual filter change isn't fought)
-      router.replace({ path: route.path, query: {} }).catch(() => {})
+    referenceReady.value = true
+    if (!queryApplied) {
+      const queryPerson = readQueryString('person')
+      if (queryPerson && persons.value.some(p => p.id === queryPerson)) {
+        filterPersonId.value = queryPerson
+      }
+      const queryCategory = readQueryString('category')
+      if (queryCategory && categories.value.some(c => c.id === queryCategory)) {
+        filterCategoryId.value = queryCategory
+      }
+      const queryMissing = readQueryString('missing')
+      filterMissingOnly.value = queryMissing === '1'
+      const queryType = readQueryString('type')
+      if (queryType === 'asset' || queryType === 'cash-inflow' || queryType === 'liability') {
+        filterType.value = queryType
+      }
+      if (queryMonth || queryPerson || queryCategory || queryType || queryMissing) {
+        // Strip query so a refresh doesn't re-apply (and a manual filter change isn't fought)
+        router.replace({ path: route.path, query: {} }).catch(() => {})
+      }
+      queryApplied = true
     }
     await loadMonthData()
   } catch (e) {
@@ -289,27 +293,39 @@ onMounted(async () => {
   } finally {
     initLoading.value = false
   }
+}
+onMounted(() => {
+  document.title = 'Monthly Update — WealthTrack'
+  void initialize()
 })
+
+function retryLoad() {
+  if (initLoading.value || loading.value || dirty.value || saving.value) return
+  if (!referenceReady.value) void initialize()
+  else void loadMonthData()
+}
 
 watch(selectedMonth, async () => {
   selectedYearInput.value = String(monthParts(selectedMonth.value).year)
-  if (initLoading.value) return
+  if (initLoading.value || !referenceReady.value) return
   saveSummary.value = null
   await loadMonthData()
 })
 
 watch(referenceDataVersion, async () => {
   if (initLoading.value || dirty.value || saving.value) return
+  if (!referenceReady.value) { await initialize(); return }
   try {
     await loadReferenceData()
     await loadMonthData()
   } catch (e) {
+    referenceReady.value = false
     error.value = e instanceof ApiError ? e.message : 'Unexpected error loading data'
   }
 })
 
 watch(dataPointsVersion, async () => {
-  if (initLoading.value || loading.value || dirty.value || saving.value) return
+  if (initLoading.value || !referenceReady.value || loading.value || dirty.value || saving.value) return
   await loadMonthData()
 })
 
@@ -409,7 +425,7 @@ function typeBadgeClass(t: MonthlyRow['categoryType']): string {
 }
 
 async function saveAll(): Promise<void> {
-  if (loading.value || rowsMonth.value !== selectedMonth.value || error.value) return
+  if (!referenceReady.value || loading.value || rowsMonth.value !== selectedMonth.value || error.value) return
   saveError.value = null
   saveSummary.value = null
   for (const row of rows.value) row.rowError = null
@@ -533,6 +549,8 @@ async function saveAll(): Promise<void> {
       </div>
     </div>
 
+    <p class="mb-4 text-xs text-gray-500 dark:text-zinc-400">Earlier recorded value is the latest entry before the selected month; its date is shown. Copying fills empty inputs for this month’s items, including filtered-out rows; review and save to record them.</p>
+
     <!-- ── Filters + Actions ───────────────────────────────────────────────── -->
     <div class="flex flex-wrap items-center gap-3 mb-4">
       <Select
@@ -567,7 +585,7 @@ async function saveAll(): Promise<void> {
         <label
           for="missing-only"
           class="text-sm text-gray-700 dark:text-zinc-300 cursor-pointer select-none"
-        >Missing only</label>
+        >No entry only</label>
       </div>
       <Button
         v-if="hasFilters"
@@ -614,7 +632,7 @@ async function saveAll(): Promise<void> {
     <div v-if="error && !initLoading" class="mb-4">
       <Message severity="error" class="w-full">Could not load data: {{ error }}</Message>
       <div class="mt-2">
-        <Button label="Retry" link size="small" @click="loadMonthData" />
+        <Button label="Retry" link size="small" :disabled="initLoading || loading || dirty || saving" @click="retryLoad" />
       </div>
     </div>
 
@@ -627,8 +645,8 @@ async function saveAll(): Promise<void> {
       class="flex flex-col items-center justify-center py-16 text-center text-gray-400 dark:text-zinc-500"
     >
       <i class="pi pi-inbox text-4xl mb-4 opacity-40" />
-      <p class="text-base font-medium mb-1">No assets found</p>
-      <p class="text-sm">Add assets in <strong>Admin</strong> to start tracking values.</p>
+      <p class="text-base font-medium mb-1">No items found</p>
+      <p class="text-sm">Add assets, liabilities, or income sources in <strong>Admin</strong> to start recording values.</p>
     </div>
 
     <!-- ── Content ─────────────────────────────────────────────────────────── -->
@@ -668,8 +686,8 @@ async function saveAll(): Promise<void> {
                 :class="typeBadgeClass(row.categoryType)"
               >{{ typeLabel(row.categoryType) }}</span>
             </div>
-            <div class="text-right shrink-0 text-xs text-gray-500 dark:text-zinc-400">
-              <p>{{ row.prevMonth ?? 'No previous observation' }}</p>
+            <div class="max-w-[45%] text-right text-xs text-gray-500 dark:text-zinc-400">
+              <p>Earlier recorded value<span class="block">{{ row.prevMonth ?? 'No earlier entry' }}</span></p>
               <p class="font-medium text-gray-700 dark:text-zinc-300">{{ formatValue(row.prevValue) }}</p>
             </div>
           </div>
@@ -691,7 +709,7 @@ async function saveAll(): Promise<void> {
               ]"
               @input="handleValueInput(row, $event)"
             />
-            <p class="text-xs mt-1">{{ row.rowError ? 'Error' : row.inputValue !== row.existingValue ? 'Unsaved' : row.existingDpId ? (isPlannedMonth ? 'Planned · saved' : 'Saved') : 'Missing' }}</p>
+            <p class="text-xs mt-1">{{ row.rowError ? 'Error' : row.inputValue !== row.existingValue ? 'Unsaved' : row.existingDpId ? (isPlannedMonth ? 'Planned · saved' : 'Saved') : 'No entry' }}</p>
             <p v-if="row.rowError" :id="`error-${row.assetId}`" role="alert" class="text-xs text-red-600 dark:text-red-400 mt-1">{{ row.rowError }}</p>
             <p
               v-else-if="row.categoryType === 'liability' && row.inputValue === null"
@@ -709,11 +727,11 @@ async function saveAll(): Promise<void> {
         >
           <thead>
             <tr class="border-b border-gray-200 dark:border-zinc-700">
-              <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Asset</th>
+              <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Item</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Type</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Category</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Person</th>
-              <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Previous observation</th>
+              <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Earlier recorded value</th>
               <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">{{ displayedMonth }}</th>
               <th class="text-left py-2 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Status</th>
             </tr>
@@ -740,7 +758,7 @@ async function saveAll(): Promise<void> {
               <td class="py-2 pr-3 text-gray-600 dark:text-zinc-400">{{ row.categoryName }}</td>
               <td class="py-2 pr-3 text-gray-600 dark:text-zinc-400">{{ row.personName }}</td>
               <td class="py-2 pr-3 text-right text-gray-500 dark:text-zinc-500 tabular-nums">
-                {{ formatValue(row.prevValue) }}<span class="block text-xs">{{ row.prevMonth ?? 'No previous observation' }}</span>
+                {{ formatValue(row.prevValue) }}<span class="block text-xs">{{ row.prevMonth ?? 'No earlier entry' }}</span>
               </td>
               <td class="py-2 pr-3">
                 <div class="flex flex-col items-end gap-1">
@@ -775,7 +793,8 @@ async function saveAll(): Promise<void> {
                 <span
                   v-else-if="row.inputValue !== null"
                   class="text-xs text-blue-500 dark:text-blue-400"
-                >unsaved</span>
+                >Unsaved</span>
+                <span v-else class="text-xs text-gray-500 dark:text-zinc-400">No entry</span>
               </td>
             </tr>
           </tbody>
@@ -785,12 +804,12 @@ async function saveAll(): Promise<void> {
       <div class="sticky bottom-0 z-20 flex w-full flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
         <span class="mr-auto text-sm" role="status">{{ itemsToSaveCount }} pending · {{ visibleRows.filter(r => r.existingDpId).length }}/{{ visibleRows.length }} {{ isPlannedMonth ? 'planned entries saved' : 'saved' }}</span>
         <Button
-          label="Copy Forward"
+          label="Copy earlier values"
           icon="pi pi-copy"
           outlined
           class="min-h-11"
           :disabled="!hasCopyForwardCandidates || loading || saving || rowsMonth !== selectedMonth || !!error"
-          title="Fill empty inputs with previous observed values"
+          title="Copy each item’s latest earlier recorded value into empty inputs; review and save to record it"
           @click="copyForward"
         />
         <Button

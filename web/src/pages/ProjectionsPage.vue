@@ -81,19 +81,22 @@ const categories = ref<Category[]>([])
 const assets     = ref<Asset[]>([])
 const assumptionsLoading = ref(false)
 const assumptionsError = ref<string | null>(null)
+let assumptionsSequence = 0
 
 async function loadAssumptions(force = false) {
   if (!force && categories.value.length > 0) return
+  const sequence = ++assumptionsSequence
   assumptionsLoading.value = true
-  assumptionsError.value = null
   try {
     const [cats, assts] = await Promise.all([getCategories(), getAssets()])
+    if (sequence !== assumptionsSequence) return
     categories.value = cats
     assets.value     = assts
+    assumptionsError.value = null
   } catch (err) {
-    assumptionsError.value = err instanceof ApiError ? err.message : 'Could not load growth assumptions'
+    if (sequence === assumptionsSequence) assumptionsError.value = err instanceof ApiError ? err.message : 'Could not load growth assumptions'
   } finally {
-    assumptionsLoading.value = false
+    if (sequence === assumptionsSequence) assumptionsLoading.value = false
   }
 }
 
@@ -117,17 +120,18 @@ function includeProjection(asset: Asset, category: Category): boolean {
   return asset.include_in_projections ?? category.include_in_projections ?? true
 }
 function projectionHint(asset: Asset, category: Category): string | null {
+  if (asset.closed_at && asset.closed_at === data.value?.projection.asOf) return `Closed in ${asset.closed_at}; no future forecast.`
   if (!includeProjection(asset, category)) return null
   const metadata = data.value?.projection.asset_metadata?.find(item => item.asset_id === asset.id)
-  if (!metadata) return !includeCurrent(asset, category) ? 'Requires a future planned entry; current observations do not seed this projection.' : null
+  if (!metadata) return !includeCurrent(asset, category) ? 'Requires a future entry; current values are not used in this forecast.' : null
   if (!metadata.projection_start_month) return !includeCurrent(asset, category)
-    ? 'No future planned entry. Current observations do not seed this projection.'
-    : 'No current observation or future planned entry to start a projection.'
+    ? 'No future entry. Current values are not used in this forecast.'
+    : 'No current recorded value or future entry to start a forecast.'
   if (!includeCurrent(asset, category)) {
     const months = data.value?.projection.months ?? []
     const lastMonth = months[months.length - 1]
     const outside = lastMonth && metadata.projection_start_month > lastMonth ? ' (outside the selected horizon)' : ''
-    return `Starts ${metadata.projection_start_month}${outside}; current observations do not seed this projection.`
+    return `Starts ${metadata.projection_start_month}${outside}; current values are not used in this forecast.`
   }
   return null
 }
@@ -205,7 +209,7 @@ async function loadProjections() {
   error.value   = null
   try {
     const result = await getProjections(horizon.value, scenario.value)
-    if (sequence === projectionLoadSequence) data.value = result
+    if (sequence === projectionLoadSequence) { data.value = result; error.value = null }
   } catch (err) {
     if (sequence === projectionLoadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
@@ -310,6 +314,7 @@ const categoryBreakdownGroups = computed(() => {
           <div class="flex min-w-0 flex-wrap items-center gap-2">
             <div class="wt-control-strip max-w-full" v-active-scroll>
               <SelectButton
+                :allow-empty="false"
                 v-model="horizon"
                 :options="HORIZONS"
                 option-label="label"
@@ -348,6 +353,7 @@ const categoryBreakdownGroups = computed(() => {
           <p v-if="horizonError" id="horizon-error" role="alert" class="text-sm text-red-600">{{ horizonError }}</p>
           <!-- Chart type selector -->
           <SelectButton
+            :allow-empty="false"
             :model-value="chartType"
             :options="CHART_OPTIONS"
             option-label="label"
@@ -369,12 +375,13 @@ const categoryBreakdownGroups = computed(() => {
           </SelectButton>
         </div>
 
-        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">As of {{ data.projection.asOf }}. Values compound using the selected rates; planned future values anchor interpolation between observations. Income is not invested, and expenses, taxes and inflation are not modeled. These are estimates.</p>
+        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">Forecast as of {{ data.projection.asOf }}. Values change evenly between known values and future entries within the selected horizon. After the last future entry in the horizon, or when there are none, assumed annual rates compound over time. Income is not invested; expenses, taxes and inflation are not included.</p>
         <!-- Row 2: Scenario selector -->
         <div class="flex flex-col sm:flex-row sm:items-center gap-2">
           <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Rate sensitivity</span>
           <div class="wt-control-strip min-w-0 max-w-full" v-active-scroll>
             <SelectButton
+              :allow-empty="false"
               v-model="scenario"
               :options="SCENARIOS"
               option-label="label"
@@ -414,7 +421,7 @@ const categoryBreakdownGroups = computed(() => {
       <div v-if="error" class="mb-4">
         <Message severity="error" class="w-full">Could not load projections. Check your connection.</Message>
         <div class="mt-2">
-          <Button label="Retry" link @click="retryCount++" />
+          <Button label="Retry" link :disabled="loading" @click="retryCount++" />
         </div>
       </div>
 
@@ -436,11 +443,11 @@ const categoryBreakdownGroups = computed(() => {
 
           <!-- ── Top row: growth assumptions + chart ─────────────────────── -->
           <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(220px,1fr)_minmax(0,4fr)] lg:items-start">
-            <!-- Growth Assumptions Panel -->
+            <!-- Assumed annual rates Panel -->
             <div class="rounded-xl bg-white shadow-sm ring-1 ring-gray-200 dark:bg-zinc-900 dark:ring-zinc-800">
               <div class="flex min-h-[44px] items-center px-4 py-3">
                 <p class="text-xs font-semibold text-gray-600 dark:text-zinc-300 uppercase tracking-wide">
-                  Growth Assumptions
+                  Assumed annual rates
                 </p>
               </div>
 
@@ -465,6 +472,7 @@ const categoryBreakdownGroups = computed(() => {
 
                 <Message v-else-if="assumptionsError" severity="warn" class="w-full text-sm">
                   Could not load growth assumptions: {{ assumptionsError }}
+                  <Button label="Retry assumptions" link :disabled="assumptionsLoading" @click="loadAssumptions(true)" />
                 </Message>
 
                 <div v-else-if="assumptionRows.length === 0" class="text-xs text-gray-400 dark:text-zinc-500 py-2">
@@ -509,7 +517,7 @@ const categoryBreakdownGroups = computed(() => {
                     >
                       <p class="m-0 break-words font-medium leading-4 text-gray-700 dark:text-zinc-300">{{ asset.name }}</p>
                       <p class="m-0 mt-1 text-gray-500 dark:text-zinc-400">
-                        {{ asset.projected_yearly_growth === null ? 'Category rate' : 'Asset override' }} ·
+                        {{ asset.projected_yearly_growth === null ? 'Category rate' : 'Custom rate' }} ·
                         <span class="font-semibold tabular-nums">{{ pctFmt.format(effectiveRate(asset.projected_yearly_growth ?? cat.projected_yearly_growth)) }}/yr</span>
                       </p>
                       <p v-if="asset.include_in_current_wealth != null || asset.include_in_projections != null" class="m-0 mt-1 text-gray-500 dark:text-zinc-400">Current wealth: {{ includeCurrent(asset, cat) ? 'included' : 'excluded' }} · Projections: {{ includeProjection(asset, cat) ? 'included' : 'excluded' }}</p>
@@ -523,11 +531,11 @@ const categoryBreakdownGroups = computed(() => {
             <div class="min-w-0">
             <details class="mb-3 text-sm"><summary class="cursor-pointer">View projection chart data</summary>
               <div class="overflow-x-auto"><table class="wt-data-table"><caption class="sr-only">Historical and projected values for visible categories</caption>
-                <thead><tr><th scope="col">Month</th><th scope="col">Phase</th><th scope="col">Total</th><th v-for="series in visibleProjectionSeries" :key="series.id" scope="col">{{ series.name }}</th></tr></thead>
+                <thead><tr><th scope="col">Month</th><th scope="col">Timeframe</th><th scope="col">Total</th><th v-for="series in visibleProjectionSeries" :key="series.id" scope="col">{{ series.name }}</th></tr></thead>
                 <tbody><tr v-for="row in projectionTableRows" :key="`${row.phase}-${row.month}`"><th scope="row">{{ row.month }}</th><td>{{ row.phase }}</td><td>{{ visibleProjectionSeries.some(series => projectionTableValue(series, row.phase, row.index) !== null) ? fmt.format(visibleProjectionSeries.reduce((sum, series) => sum + (projectionTableValue(series, row.phase, row.index) ?? 0), 0)) : '—' }}</td><td v-for="series in visibleProjectionSeries" :key="series.id">{{ projectionTableValue(series, row.phase, row.index) === null ? '—' : fmt.format(projectionTableValue(series, row.phase, row.index)!) }}</td></tr></tbody>
               </table></div>
             </details>
-            <ChartCard title="Net Worth Projection">
+            <ChartCard title="Net Worth Forecast">
               <p v-if="data.projection.available && !data.projection.available.some(Boolean)" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">No projected values are available in this horizon.</p>
               <ProjectionsChart
                 :data="data"
@@ -552,7 +560,7 @@ const categoryBreakdownGroups = computed(() => {
               </button>
             </div>
 
-            <p class="text-xs text-gray-500 dark:text-zinc-400">Only nonzero current balances are shown. Future-only assets appear from their planned dates within the selected horizon. Assets with no observations or planned entries contribute no value.</p>
+            <p class="text-xs text-gray-500 dark:text-zinc-400">Only nonzero current balances are shown. Future-only assets appear from their entry dates within the selected horizon. Assets with no recorded values or future entries contribute no value.</p>
 
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,2fr)_minmax(0,1fr)]">
               <div
@@ -616,7 +624,7 @@ const categoryBreakdownGroups = computed(() => {
                     >
                       <ChevronUp v-if="expandedCategoryId === row.category_id" class="h-3 w-3" aria-hidden="true" />
                       <ChevronDown v-else class="h-3 w-3" aria-hidden="true" />
-                      <span>{{ expandedCategoryId === row.category_id ? 'Hide details' : `${assetsForCategory(row.category_id).length} details` }}</span>
+                      <span>{{ expandedCategoryId === row.category_id ? 'Hide items' : `View ${assetsForCategory(row.category_id).length} ${assetsForCategory(row.category_id).length === 1 ? 'item' : 'items'}` }}</span>
                     </button>
                     <div
                       v-if="expandedCategoryId === row.category_id"
@@ -649,8 +657,9 @@ const categoryBreakdownGroups = computed(() => {
               <!-- Projection Milestones -->
               <div class="flex h-full flex-col rounded-lg border border-gray-200 bg-white p-4 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
                 <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
-                  Projected Milestones
+                  Forecast values
                 </p>
+                <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Includes all forecast categories, including those hidden from the chart.</p>
                 <div class="flex flex-col gap-0">
                   <div
                     v-for="m in milestones"
@@ -680,7 +689,7 @@ const categoryBreakdownGroups = computed(() => {
                         </p>
                       </div>
                       <div class="min-w-0 text-right">
-                        <p class="text-xs font-medium text-gray-500 dark:text-zinc-400">Projected value</p>
+                        <p class="text-xs font-medium text-gray-500 dark:text-zinc-400">Forecast value</p>
                         <p
                           v-if="customMilestoneValue"
                           class="mt-1 truncate text-base font-bold text-gray-900 tabular-nums dark:text-zinc-100"
@@ -689,7 +698,7 @@ const categoryBreakdownGroups = computed(() => {
                     </div>
                   </div>
                   <p class="mt-1.5 text-xs text-gray-400 dark:text-zinc-500">
-                    As of {{ data.projection.asOf }} · solid = historical · dashed = projected · planned values override growth
+                    As of {{ data.projection.asOf }} · solid = past values · dashed = forecast · future entries set values on their dates
                   </p>
                 </div>
               </div>

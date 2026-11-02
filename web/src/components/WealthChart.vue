@@ -179,9 +179,13 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
   return { labels: labels.value, datasets } as ChartData<'line'>
 })
 
+const observedPieSeries = computed(() => visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id)))
+const positivePieSeries = computed(() => observedPieSeries.value.filter(s => (s.values[today.value] ?? 0) > 0))
+const hasNegativePieValues = computed(() => observedPieSeries.value.some(s => (s.values[today.value] ?? 0) < 0))
+
 const pieData = computed((): ChartData<'pie'> => {
-  const series = visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id))
-  const values = series.map(s => Math.max(0, s.values[today.value] ?? 0))
+  const series = positivePieSeries.value
+  const values = series.map(s => s.values[today.value] ?? 0)
   return {
     labels: series.map(s => s.category_name),
     datasets: [{
@@ -208,7 +212,7 @@ const pieOptions = computed((): ChartOptions<'pie'> => {
       if (hits.length === 0) return
       const sliceIndex = hits[0].index
       const label = chart.data.labels?.[sliceIndex]
-      const pieSeries = visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id))
+      const pieSeries = positivePieSeries.value
       const originalIndex = visibleSeries.value.indexOf(pieSeries[sliceIndex])
       emit('point-click', {
         monthIndex: lastMonthIndex,
@@ -369,10 +373,11 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
 <template>
   <div class="h-[420px]">
     <Pie
-      v-if="chartType === 'pie'"
+      v-if="chartType === 'pie' && positivePieSeries.length"
       :data="(pieData as ChartData<'pie'>)"
       :options="(pieOptions as ChartOptions<'pie'>)"
     />
+    <div v-else-if="chartType === 'pie'" class="flex h-full items-center justify-center text-center text-sm text-gray-500 dark:text-zinc-400">No positive values to show in the pie chart for this month.</div>
     <Bar
       v-else-if="chartType === 'bar'"
       :data="(chartData as ChartData<'bar'>)"
@@ -384,10 +389,12 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
       :options="(chartOptions as ChartOptions<'line'>)"
     />
   </div>
+  <p v-if="chartType === 'pie' && positivePieSeries.length" class="mt-3 text-sm text-gray-600 dark:text-zinc-400">Pie percentages are shares of positive values only.<template v-if="hasNegativePieValues"> Negative values are omitted from the pie; see the signed values below.</template></p>
+  <p v-else-if="chartType === 'pie' && hasNegativePieValues" class="mt-3 text-sm text-gray-600 dark:text-zinc-400">Negative values are omitted from the pie; see the signed values below.</p>
   <details v-if="chartType === 'pie'" class="mt-3"><summary class="cursor-pointer text-sm">View pie chart data</summary>
-    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Pie chart values</caption><thead><tr><th scope="col">Category</th><th scope="col">Value</th></tr></thead><tbody><tr v-for="series in visibleSeries" :key="series.category_id"><th scope="row">{{ series.category_name }}</th><td>{{ hasObservation(data, today, series.category_id) ? eurFmt.format(Math.max(0, series.values[today] ?? 0)) : '—' }}</td></tr></tbody></table></div>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Pie chart values</caption><thead><tr><th scope="col">Category</th><th scope="col">Value</th></tr></thead><tbody><tr v-for="series in visibleSeries" :key="series.category_id"><th scope="row">{{ series.category_name }}</th><td>{{ hasObservation(data, today, series.category_id) ? eurFmt.format(series.values[today] ?? 0) : '—' }}</td></tr></tbody></table></div>
   </details>
   <details class="mt-3"><summary class="cursor-pointer text-sm">View chart data</summary>
-    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Chart values by month</caption><thead><tr><th scope="col">Month</th><th scope="col">Phase</th><th v-for="series in visibleSeries" :key="series.category_id" scope="col">{{ series.category_name }}</th></tr></thead><tbody><tr v-for="(month, i) in data.months" :key="month"><th scope="row">{{ month }}</th><td>{{ data.current_month && month.slice(0, 7) > data.current_month ? 'Planned' : 'Actual' }}</td><td v-for="series in visibleSeries" :key="series.category_id">{{ hasObservation(data, i, series.category_id) ? eurFmt.format(series.values[i] ?? 0) : '—' }}</td></tr></tbody></table></div>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Chart values by month</caption><thead><tr><th scope="col">Month</th><th scope="col">Timeframe</th><th v-for="series in visibleSeries" :key="series.category_id" scope="col">{{ series.category_name }}</th></tr></thead><tbody><tr v-for="(month, i) in data.months" :key="month"><th scope="row">{{ month }}</th><td>{{ data.current_month && month.slice(0, 7) > data.current_month ? 'Future' : 'Past / current' }}</td><td v-for="series in visibleSeries" :key="series.category_id">{{ hasObservation(data, i, series.category_id) ? eurFmt.format(series.values[i] ?? 0) : '—' }}</td></tr></tbody></table></div>
   </details>
 </template>

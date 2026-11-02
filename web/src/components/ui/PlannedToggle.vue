@@ -17,10 +17,10 @@ const { showPlanned } = useShowPlanned()
     :aria-pressed="showPlanned"
     :disabled="props.disabled"
     :aria-describedby="props.descriptionId"
-    title="Extend charts past today with planned future values"
+    title="Extend charts with recorded future entries"
     @click="showPlanned = !showPlanned"
   >
     <span class="w-2 h-2 rounded-full" :class="showPlanned ? 'bg-indigo-500' : 'bg-gray-300 dark:bg-zinc-600'" />
-    Show planned
+    Show future entries
   </button>
 </template>

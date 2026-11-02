@@ -127,7 +127,8 @@ const cards = computed(() => [
     subtitle: 'Total asset value over time',
     valueClass: 'text-emerald-600 dark:text-emerald-400',
     currentValue: valueAt(assetValues.value, wealthToday.value),
-    hasData: hasObservation(props.data, wealthToday.value, undefined, 'asset'),
+    hasCurrentValue: hasObservation(props.data, wealthToday.value, undefined, 'asset'),
+    hasHistory: props.data.months.some((_, i) => hasObservation(props.data, i, undefined, 'asset')),
     data: trendChartData('Assets', labels.value, assetValues.value.map((value, i) => hasObservation(props.data, i, undefined, 'asset') ? value : null), wealthColors.assets.emerald, wealthToday.value),
     kind: 'assets' as CardKind,
     labelsRef: () => labels.value,
@@ -137,7 +138,8 @@ const cards = computed(() => [
     subtitle: 'Total debt balance over time',
     valueClass: 'text-red-600 dark:text-red-400',
     currentValue: valueAt(liabilityValues.value, wealthToday.value),
-    hasData: hasObservation(props.data, wealthToday.value, undefined, 'liability'),
+    hasCurrentValue: hasObservation(props.data, wealthToday.value, undefined, 'liability'),
+    hasHistory: props.data.months.some((_, i) => hasObservation(props.data, i, undefined, 'liability')),
     data: trendChartData('Liabilities', labels.value, liabilityValues.value.map((value, i) => hasObservation(props.data, i, undefined, 'liability') ? value : null), wealthColors.liabilities.rose, wealthToday.value),
     kind: 'liabilities' as CardKind,
     labelsRef: () => labels.value,
@@ -147,7 +149,8 @@ const cards = computed(() => [
     subtitle: 'Income over time',
     valueClass: 'text-teal-600 dark:text-teal-400',
     currentValue: valueAt(cashInflowValues.value, inflowToday.value),
-    hasData: hasObservation(props.cashInflowData, inflowToday.value, undefined, 'cash-inflow'),
+    hasCurrentValue: hasObservation(props.cashInflowData, inflowToday.value, undefined, 'cash-inflow'),
+    hasHistory: props.cashInflowData.months.some((_, i) => hasObservation(props.cashInflowData, i, undefined, 'cash-inflow')),
     data: trendChartData('Income', cashInflowLabels.value, cashInflowValues.value.map((value, i) => hasObservation(props.cashInflowData, i, undefined, 'cash-inflow') ? value : null), wealthColors.cashInflow.teal, inflowToday.value),
     kind: 'income' as CardKind,
     labelsRef: () => cashInflowLabels.value,
@@ -219,15 +222,16 @@ const cardOptionsByKind = computed<Record<CardKind, ChartOptions<'line'>>>(() =>
         :key="card.title"
         :title="card.title"
         :subtitle="card.subtitle"
+        :data-testid="`dashboard-${card.kind}-trend`"
       >
         <template #actions>
           <p :class="['shrink-0 text-sm font-bold tabular-nums', card.valueClass]">
-            {{ eurFmt.format(card.currentValue) }}
+            {{ card.hasCurrentValue ? eurFmt.format(card.currentValue) : '—' }}
           </p>
         </template>
         <div class="h-[320px]">
           <Line
-            v-if="card.hasData"
+            v-if="card.hasHistory"
             :data="card.data"
             :options="cardOptionsByKind[card.kind]"
           />

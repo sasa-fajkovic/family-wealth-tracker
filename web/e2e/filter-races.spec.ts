@@ -57,8 +57,8 @@ test('latest projection response wins after rapid horizon changes', async ({ pag
   const earlier = page.waitForResponse(response => response.url().includes('years=5'))
   release?.()
   await earlier
-  await expect(page.getByText(/^As of 2222-01\. Values compound/)).toBeVisible()
-  await expect(page.getByText(/As of 1111-01/)).toHaveCount(0)
+  await expect(page.getByText(/^Forecast as of 2222-01\. Values change evenly/)).toBeVisible()
+  await expect(page.getByText(/Forecast as of 1111-01/)).toHaveCount(0)
 })
 
 test('latest selected month wins when earlier month loads slowly', async ({ page, request }) => {
