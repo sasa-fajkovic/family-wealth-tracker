@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
-import { RouterLink, useRoute, useRouter } from 'vue-router'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { RouterLink, useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import {
   getAssets, getCategories, getPersons, ApiError,
-  getDataPointsForMonth, batchUpsertDataPoints,
+  getDataPointsForMonth, getAllDataPoints, batchUpsertDataPoints,
 } from '../api/client'
 import type { BatchUpsertResult } from '../api/client'
 import type { Asset, Category, Person, DataPoint } from '../types/index'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import Dialog from 'primevue/dialog'
 import Skeleton from 'primevue/skeleton'
 import Checkbox from 'primevue/checkbox'
 import { useDataRefresh } from '../composables/useDataRefresh'
@@ -24,6 +25,7 @@ interface MonthlyRow {
   categoryType: 'asset' | 'cash-inflow' | 'liability'
   personId: string
   personName: string
+  prevMonth: string | null
   prevValue: number | null
   existingDpId: string | null
   existingValue: number | null
@@ -31,6 +33,7 @@ interface MonthlyRow {
   rowError: string | null
   showFrom: string | null
   showUntil: string | null
+  closedAt: string | null
 }
 
 interface SaveSummary {
@@ -56,7 +59,7 @@ const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => {
 })
 
 function formatValue(v: number | null): string {
-  return eurFormatter.format(v ?? 0)
+  return v === null ? '—' : eurFormatter.format(v)
 }
 
 function currentMonthStr(): string {
@@ -95,6 +98,8 @@ const filterType = ref<'asset' | 'cash-inflow' | 'liability' | null>(null)
 const filterMissingOnly = ref(false)
 
 const initLoading = ref(true)
+const referenceReady = ref(false)
+let queryApplied = false
 const loading = ref(false)
 const error = ref<string | null>(null)
 const saving = ref(false)
@@ -125,17 +130,18 @@ const selectedMonthNumber = computed({
   set: (month: number | null) => {
     if (!month) return
     const { year } = monthParts(selectedMonth.value)
-    selectedMonth.value = formatYearMonth(year, month)
+    void requestMonth(formatYearMonth(year, month))
   },
 })
 
-const filteredRows = computed(() => rows.value.filter(row => {
+const visibleRows = computed(() => rows.value.filter(row =>
+  (!row.showFrom || displayedMonth.value >= row.showFrom) && (!row.showUntil || displayedMonth.value <= row.showUntil) && (!row.closedAt || displayedMonth.value <= row.closedAt)
+))
+const filteredRows = computed(() => visibleRows.value.filter(row => {
   if (filterPersonId.value && row.personId !== filterPersonId.value) return false
   if (filterCategoryId.value && row.categoryId !== filterCategoryId.value) return false
   if (filterType.value && row.categoryType !== filterType.value) return false
   if (filterMissingOnly.value && row.existingDpId !== null) return false
-  if (row.showFrom && selectedMonth.value < row.showFrom) return false
-  if (row.showUntil && selectedMonth.value > row.showUntil) return false
   return true
 }))
 
@@ -144,17 +150,38 @@ const hasFilters = computed(() =>
 )
 
 const hasCopyForwardCandidates = computed(() =>
-  rows.value.some(r => r.inputValue === null && r.prevValue !== null)
+  visibleRows.value.some(r => r.inputValue === null && r.existingValue === null && r.prevValue !== null)
 )
 
 const itemsToSaveCount = computed(() =>
-  filteredRows.value.filter(r =>
-    r.inputValue !== null && (r.inputValue !== r.existingValue || !r.existingDpId)
+  rows.value.filter(r =>
+    r.inputValue !== r.existingValue
   ).length
 )
 
 const displayedMonth = computed(() => rowsMonth.value)
-const displayedPrevMonth = computed(() => shiftMonth(displayedMonth.value, -1))
+const isPlannedMonth = computed(() => displayedMonth.value > currentMonthStr())
+const dirty = computed(() => rows.value.some(r => r.inputValue !== r.existingValue))
+const pendingDecision = ref<((decision: 'save' | 'discard' | 'stay') => void) | null>(null)
+function decide(value: 'save' | 'discard' | 'stay') { pendingDecision.value?.(value); pendingDecision.value = null }
+async function allowLeave(): Promise<boolean> {
+  if (saving.value) return false
+  if (!dirty.value) return true
+  const decision = await new Promise<'save' | 'discard' | 'stay'>(resolve => { pendingDecision.value = resolve })
+  if (decision === 'stay') return false
+  if (decision === 'discard') return true
+  await saveAll()
+  return !dirty.value
+}
+async function requestMonth(month: string) {
+  if (month !== selectedMonth.value && await allowLeave()) selectedMonth.value = month
+}
+onBeforeRouteLeave(async () => allowLeave())
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (dirty.value || saving.value) { event.preventDefault(); event.returnValue = '' }
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onUnmounted(() => window.removeEventListener('beforeunload', beforeUnload))
 let monthLoadSeq = 0
 
 // ── Data loading ───────────────────────────────────────────────────────────────
@@ -162,16 +189,15 @@ let monthLoadSeq = 0
 async function loadMonthData(): Promise<void> {
   const loadSeq = ++monthLoadSeq
   const month = selectedMonth.value
-  const previousMonth = shiftMonth(month, -1)
   loading.value = true
-  error.value = null
   try {
-    const [currDps, prevDps] = await Promise.all([
+    const [currDps, allDps] = await Promise.all([
       getDataPointsForMonth(month),
-      getDataPointsForMonth(previousMonth),
+      getAllDataPoints(),
     ])
-    if (loadSeq !== monthLoadSeq || selectedMonth.value !== month) return
-    buildRows(currDps, prevDps)
+    if (loadSeq !== monthLoadSeq || selectedMonth.value !== month || (rowsMonth.value === month && dirty.value)) return
+    error.value = null
+    buildRows(currDps, allDps.filter(dp => dp.year_month < month))
     rowsMonth.value = month
   } catch (e) {
     if (loadSeq !== monthLoadSeq) return
@@ -190,7 +216,11 @@ async function loadReferenceData(): Promise<void> {
 
 function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
   const currIndex = new Map(currDps.map(dp => [dp.asset_id, dp]))
-  const prevIndex = new Map(prevDps.map(dp => [dp.asset_id, dp]))
+  const prevIndex = new Map<string, DataPoint>()
+  for (const dp of prevDps) {
+    const previous = prevIndex.get(dp.asset_id)
+    if (!previous || dp.year_month > previous.year_month) prevIndex.set(dp.asset_id, dp)
+  }
 
   rows.value = assets.value
     .map(asset => {
@@ -208,6 +238,7 @@ function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
         categoryType: catType,
         personId: asset.person_id,
         personName: person?.name ?? asset.person_id,
+        prevMonth: prevDp?.year_month ?? null,
         prevValue: prevDp?.value ?? null,
         existingDpId: currDp?.id ?? null,
         existingValue: currDp?.value ?? null,
@@ -215,6 +246,7 @@ function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
         rowError: null,
         showFrom: asset.show_from ?? null,
         showUntil: asset.show_until ?? null,
+        closedAt: asset.closed_at ?? null,
       }
     })
     .sort((a, b) =>
@@ -224,79 +256,99 @@ function buildRows(currDps: DataPoint[], prevDps: DataPoint[]): void {
     )
 }
 
-onMounted(async () => {
-  document.title = 'Monthly Update — WealthTrack'
+async function initialize() {
   initLoading.value = true
-  error.value = null
   try {
-    const queryMonth = readQueryString('month')
+    const queryMonth = queryApplied ? null : readQueryString('month')
     if (queryMonth && isValidYearMonth(queryMonth)) {
       selectedMonth.value = queryMonth
       selectedYearInput.value = String(monthParts(queryMonth).year)
     }
     await loadReferenceData()
-    const queryPerson = readQueryString('person')
-    if (queryPerson && persons.value.some(p => p.id === queryPerson)) {
-      filterPersonId.value = queryPerson
+    referenceReady.value = true
+    if (!queryApplied) {
+      const queryPerson = readQueryString('person')
+      if (queryPerson && persons.value.some(p => p.id === queryPerson)) {
+        filterPersonId.value = queryPerson
+      }
+      const queryCategory = readQueryString('category')
+      if (queryCategory && categories.value.some(c => c.id === queryCategory)) {
+        filterCategoryId.value = queryCategory
+      }
+      const queryMissing = readQueryString('missing')
+      filterMissingOnly.value = queryMissing === '1'
+      const queryType = readQueryString('type')
+      if (queryType === 'asset' || queryType === 'cash-inflow' || queryType === 'liability') {
+        filterType.value = queryType
+      }
+      if (queryMonth || queryPerson || queryCategory || queryType || queryMissing) {
+        // Strip query so a refresh doesn't re-apply (and a manual filter change isn't fought)
+        router.replace({ path: route.path, query: {} }).catch(() => {})
+      }
+      queryApplied = true
     }
-    const queryCategory = readQueryString('category')
-    if (queryCategory && categories.value.some(c => c.id === queryCategory)) {
-      filterCategoryId.value = queryCategory
-    }
-    const queryType = readQueryString('type')
-    if (queryType === 'asset' || queryType === 'cash-inflow' || queryType === 'liability') {
-      filterType.value = queryType
-    }
-    if (queryMonth || queryPerson || queryCategory || queryType) {
-      // Strip query so a refresh doesn't re-apply (and a manual filter change isn't fought)
-      router.replace({ path: route.path, query: {} }).catch(() => {})
-    }
-    await loadMonthData()
+    let requestedMonth: string
+    do {
+      requestedMonth = selectedMonth.value
+      await loadMonthData()
+    } while (requestedMonth !== selectedMonth.value)
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : 'Unexpected error loading data'
   } finally {
     initLoading.value = false
   }
+}
+onMounted(() => {
+  document.title = 'Monthly Update — WealthTrack'
+  void initialize()
 })
+
+function retryLoad() {
+  if (initLoading.value || loading.value || dirty.value || saving.value) return
+  if (!referenceReady.value) void initialize()
+  else void loadMonthData()
+}
 
 watch(selectedMonth, async () => {
   selectedYearInput.value = String(monthParts(selectedMonth.value).year)
-  if (initLoading.value) return
+  if (initLoading.value || !referenceReady.value) return
   saveSummary.value = null
   await loadMonthData()
 })
 
 watch(referenceDataVersion, async () => {
-  if (initLoading.value) return
+  if (initLoading.value || dirty.value || saving.value) return
+  if (!referenceReady.value) { await initialize(); return }
   try {
     await loadReferenceData()
     await loadMonthData()
   } catch (e) {
+    referenceReady.value = false
     error.value = e instanceof ApiError ? e.message : 'Unexpected error loading data'
   }
 })
 
 watch(dataPointsVersion, async () => {
-  if (initLoading.value || loading.value) return
+  if (initLoading.value || !referenceReady.value || loading.value || dirty.value || saving.value) return
   await loadMonthData()
 })
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 
 function navigate(delta: -1 | 1): void {
-  selectedMonth.value = shiftMonth(selectedMonth.value, delta)
+  void requestMonth(shiftMonth(selectedMonth.value, delta))
 }
 
 function navigateYear(delta: -1 | 1): void {
   const { year, month } = monthParts(selectedMonth.value)
   const nextYear = year + delta
   if (nextYear < MIN_JUMP_YEAR || nextYear > MAX_JUMP_YEAR) return
-  selectedMonth.value = formatYearMonth(nextYear, month)
+  void requestMonth(formatYearMonth(nextYear, month))
 }
 
 function jumpToYear(year: number): void {
   const { month } = monthParts(selectedMonth.value)
-  selectedMonth.value = formatYearMonth(year, month)
+  void requestMonth(formatYearMonth(year, month)).then(resetYearInput)
 }
 
 function handleYearInput(e: Event): void {
@@ -324,7 +376,7 @@ function selectYearInput(e: FocusEvent): void {
 }
 
 function jumpToCurrentMonth(): void {
-  selectedMonth.value = currentMonthStr()
+  void requestMonth(currentMonthStr())
 }
 
 function clearFilters(): void {
@@ -335,8 +387,8 @@ function clearFilters(): void {
 }
 
 function copyForward(): void {
-  for (const row of rows.value) {
-    if (row.inputValue === null && row.prevValue !== null) {
+  for (const row of visibleRows.value) {
+    if (row.inputValue === null && row.existingValue === null && row.prevValue !== null) {
       row.inputValue = row.prevValue
       row.rowError = null
     }
@@ -377,6 +429,7 @@ function typeBadgeClass(t: MonthlyRow['categoryType']): string {
 }
 
 async function saveAll(): Promise<void> {
+  if (!referenceReady.value || loading.value || rowsMonth.value !== selectedMonth.value || error.value) return
   saveError.value = null
   saveSummary.value = null
   for (const row of rows.value) row.rowError = null
@@ -385,8 +438,9 @@ async function saveAll(): Promise<void> {
   let skipped = 0
   let localFailed = 0
 
-  for (const row of filteredRows.value) {
+  for (const row of rows.value) {
     if (row.inputValue === null) {
+      if (row.existingDpId) { row.rowError = 'Enter a value; use History / Corrections to delete an entry'; localFailed++; continue }
       skipped++
       continue
     }
@@ -424,7 +478,14 @@ async function saveAll(): Promise<void> {
       errors: result.errors,
     }
 
-    await loadMonthData()
+    const failedIds = new Set(result.errors.map(err => err.asset_id))
+    for (const item of batchItems) {
+      const row = rows.value.find(r => r.assetId === item.asset_id)
+      if (row && !failedIds.has(item.asset_id)) {
+        row.existingValue = item.value
+        row.existingDpId = row.existingDpId ?? 'saved'
+      }
+    }
     notifyDataPointsChanged()
   } catch (e) {
     saveError.value = e instanceof ApiError ? e.message : 'Unexpected error during save'
@@ -436,6 +497,10 @@ async function saveAll(): Promise<void> {
 
 <template>
   <div class="px-4 sm:px-6 py-6">
+    <Dialog :visible="!!pendingDecision" @keydown.esc.stop="decide('stay')" modal header="Unsaved changes" :closable="false" :draggable="false" :style="{ width: '26rem' }">
+      <p>Save your changes before leaving this month?</p>
+      <template #footer><Button label="Save" @click="decide('save')" /><Button label="Discard" severity="danger" outlined @click="decide('discard')" /><Button label="Stay" autofocus severity="secondary" @click="decide('stay')" /></template>
+    </Dialog>
     <!-- ── Header ──────────────────────────────────────────────────────────── -->
     <div class="flex flex-wrap items-center gap-3 mb-6">
       <RouterLink
@@ -444,41 +509,29 @@ async function saveAll(): Promise<void> {
       >
         History / Corrections
       </RouterLink>
-      <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:ml-auto sm:justify-end sm:gap-3">
-        <div class="inline-flex items-center" aria-label="Month navigation">
-          <Button
-            icon="pi pi-chevron-left"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Previous month"
-            @click="navigate(-1)"
-          />
+      <div class="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto sm:justify-end" aria-label="Choose period">
+        <div class="wt-period-group" role="group" aria-label="Month navigation">
+          <button type="button" class="wt-period-arrow" aria-label="Previous month" @click="navigate(-1)">
+            <i class="pi pi-chevron-left" aria-hidden="true" />
+          </button>
           <Select
             v-model="selectedMonthNumber"
             :options="MONTH_OPTIONS"
             option-label="label"
             option-value="value"
             aria-label="Select month"
-            class="h-11 min-w-28 sm:min-w-40 wt-month-select"
+            class="wt-month-select"
           />
-          <Button
-            icon="pi pi-chevron-right"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Next month"
-            @click="navigate(1)"
-          />
+          <button type="button" class="wt-period-arrow" aria-label="Next month" @click="navigate(1)">
+            <i class="pi pi-chevron-right" aria-hidden="true" />
+          </button>
         </div>
-        <div class="inline-flex items-center" aria-label="Year navigation">
-          <Button
-            icon="pi pi-chevron-left"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Previous year"
-            @click="navigateYear(-1)"
-          />
-          <label class="inline-flex h-11 items-center gap-2 rounded-2xl bg-gray-100/80 p-1 pl-3 shadow-sm ring-1 ring-black/0 sm:gap-3 sm:pl-4 dark:bg-zinc-800/80">
-            <span class="hidden text-sm font-semibold text-gray-500 sm:inline dark:text-zinc-400">Year</span>
+        <div class="wt-period-group" role="group" aria-label="Year navigation">
+          <button type="button" class="wt-period-arrow" aria-label="Previous year" @click="navigateYear(-1)">
+            <i class="pi pi-chevron-left" aria-hidden="true" />
+          </button>
+          <label class="wt-period-year">
+            <span class="wt-period-year-label">Year</span>
             <input
               :value="selectedYearInput"
               type="number"
@@ -486,30 +539,21 @@ async function saveAll(): Promise<void> {
               :min="MIN_JUMP_YEAR"
               :max="MAX_JUMP_YEAR"
               aria-label="Jump to year"
-              class="h-10 w-16 rounded-xl border border-gray-200 bg-white px-2 text-center text-lg font-bold tabular-nums text-gray-900 shadow-sm outline-none transition [appearance:textfield] focus:border-emerald-300 focus:ring-2 focus:ring-emerald-100 sm:w-24 sm:px-3 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-emerald-500 dark:focus:ring-emerald-500/20 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               @input="handleYearInput"
               @focus="selectYearInput"
               @blur="applyYearInput"
               @keydown.enter.prevent="applyYearInput"
             />
           </label>
-          <Button
-            icon="pi pi-chevron-right"
-            text
-            class="hidden sm:inline-flex min-h-11 !w-8 !px-0"
-            aria-label="Next year"
-            @click="navigateYear(1)"
-          />
+          <button type="button" class="wt-period-arrow" aria-label="Next year" @click="navigateYear(1)">
+            <i class="pi pi-chevron-right" aria-hidden="true" />
+          </button>
         </div>
-        <Button
-          label="This month"
-          text
-          severity="secondary"
-          class="min-h-11"
-          @click="jumpToCurrentMonth"
-        />
+        <button type="button" class="wt-period-current" @click="jumpToCurrentMonth">This month</button>
       </div>
     </div>
+
+    <p class="mb-4 text-xs text-gray-500 dark:text-zinc-400">Earlier recorded value is the latest entry before the selected month; its date is shown. Copying fills empty inputs for this month’s items, including filtered-out rows; review and save to record them.</p>
 
     <!-- ── Filters + Actions ───────────────────────────────────────────────── -->
     <div class="flex flex-wrap items-center gap-3 mb-4">
@@ -545,7 +589,7 @@ async function saveAll(): Promise<void> {
         <label
           for="missing-only"
           class="text-sm text-gray-700 dark:text-zinc-300 cursor-pointer select-none"
-        >Missing only</label>
+        >No entry only</label>
       </div>
       <Button
         v-if="hasFilters"
@@ -556,25 +600,6 @@ async function saveAll(): Promise<void> {
         severity="secondary"
         @click="clearFilters"
       />
-      <div class="flex w-full flex-wrap gap-2 sm:w-auto sm:ml-auto">
-        <Button
-          label="Copy Forward"
-          icon="pi pi-copy"
-          outlined
-          class="min-h-11"
-          :disabled="!hasCopyForwardCandidates || loading || saving"
-          title="Fill empty inputs with previous month values"
-          @click="copyForward"
-        />
-        <Button
-          :label="saving ? 'Saving…' : `Save All${itemsToSaveCount > 0 ? ` (${itemsToSaveCount})` : ''}`"
-          icon="pi pi-save"
-          class="min-h-11"
-          :loading="saving"
-          :disabled="itemsToSaveCount === 0 || saving || loading"
-          @click="saveAll"
-        />
-      </div>
     </div>
 
     <!-- ── Save summary ────────────────────────────────────────────────────── -->
@@ -611,7 +636,7 @@ async function saveAll(): Promise<void> {
     <div v-if="error && !initLoading" class="mb-4">
       <Message severity="error" class="w-full">Could not load data: {{ error }}</Message>
       <div class="mt-2">
-        <Button label="Retry" link size="small" @click="loadMonthData" />
+        <Button label="Retry" link size="small" :disabled="initLoading || loading || dirty || saving" @click="retryLoad" />
       </div>
     </div>
 
@@ -624,8 +649,8 @@ async function saveAll(): Promise<void> {
       class="flex flex-col items-center justify-center py-16 text-center text-gray-400 dark:text-zinc-500"
     >
       <i class="pi pi-inbox text-4xl mb-4 opacity-40" />
-      <p class="text-base font-medium mb-1">No assets found</p>
-      <p class="text-sm">Add assets in <strong>Admin</strong> to start tracking values.</p>
+      <p class="text-base font-medium mb-1">No items found</p>
+      <p class="text-sm">Add assets, liabilities, or income sources in <strong>Admin</strong> to start recording values.</p>
     </div>
 
     <!-- ── Content ─────────────────────────────────────────────────────────── -->
@@ -656,8 +681,8 @@ async function saveAll(): Promise<void> {
         >
           <div class="flex items-start justify-between gap-2 mb-3">
             <div class="min-w-0">
-              <p class="font-medium text-sm text-gray-900 dark:text-zinc-100">{{ row.assetName }}</p>
-              <p class="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+              <p class="break-words font-medium text-sm text-gray-900 dark:text-zinc-100">{{ row.assetName }}</p>
+              <p class="break-words text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
                 {{ row.categoryName }} · {{ row.personName }}
               </p>
               <span
@@ -665,8 +690,8 @@ async function saveAll(): Promise<void> {
                 :class="typeBadgeClass(row.categoryType)"
               >{{ typeLabel(row.categoryType) }}</span>
             </div>
-            <div class="text-right shrink-0 text-xs text-gray-500 dark:text-zinc-400">
-              <p>{{ displayedPrevMonth }}</p>
+            <div class="max-w-[45%] text-right text-xs text-gray-500 dark:text-zinc-400">
+              <p>Earlier recorded value<span class="block">{{ row.prevMonth ?? 'No earlier entry' }}</span></p>
               <p class="font-medium text-gray-700 dark:text-zinc-300">{{ formatValue(row.prevValue) }}</p>
             </div>
           </div>
@@ -678,15 +703,18 @@ async function saveAll(): Promise<void> {
               :placeholder="row.categoryType === 'liability' ? 'e.g. -50000' : 'e.g. 10000'"
               step="1"
               :aria-label="`Value for ${row.assetName} in ${displayedMonth}`"
+              :aria-invalid="!!row.rowError"
+              :aria-errormessage="row.rowError ? `error-${row.assetId}` : undefined"
               class="wt-number-input wt-month-value-input w-full"
-              :disabled="loading || saving"
+              :disabled="loading || saving || rowsMonth !== selectedMonth || !!error"
               :class="[
                 row.rowError ? 'wt-month-value-input-error' : '',
                 row.categoryType === 'liability' ? 'text-red-600 dark:text-red-300' : 'text-gray-900 dark:text-zinc-100',
               ]"
               @input="handleValueInput(row, $event)"
             />
-            <p v-if="row.rowError" class="text-xs text-red-600 dark:text-red-400 mt-1">{{ row.rowError }}</p>
+            <p class="text-xs mt-1">{{ row.rowError ? 'Error' : row.inputValue !== row.existingValue ? 'Unsaved' : row.existingDpId ? (isPlannedMonth ? 'Planned · saved' : 'Saved') : 'No entry' }}</p>
+            <p v-if="row.rowError" :id="`error-${row.assetId}`" role="alert" class="text-xs text-red-600 dark:text-red-400 mt-1">{{ row.rowError }}</p>
             <p
               v-else-if="row.categoryType === 'liability' && row.inputValue === null"
               class="text-xs text-orange-500 dark:text-orange-400 mt-1"
@@ -703,11 +731,11 @@ async function saveAll(): Promise<void> {
         >
           <thead>
             <tr class="border-b border-gray-200 dark:border-zinc-700">
-              <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Asset</th>
+              <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Item</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Type</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Category</th>
               <th class="text-left py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Person</th>
-              <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">{{ displayedPrevMonth }}</th>
+              <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Earlier recorded value</th>
               <th class="text-right py-2 pr-3 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">{{ displayedMonth }}</th>
               <th class="text-left py-2 font-medium text-gray-500 dark:text-zinc-400 text-xs uppercase tracking-wide">Status</th>
             </tr>
@@ -734,7 +762,7 @@ async function saveAll(): Promise<void> {
               <td class="py-2 pr-3 text-gray-600 dark:text-zinc-400">{{ row.categoryName }}</td>
               <td class="py-2 pr-3 text-gray-600 dark:text-zinc-400">{{ row.personName }}</td>
               <td class="py-2 pr-3 text-right text-gray-500 dark:text-zinc-500 tabular-nums">
-                {{ formatValue(row.prevValue) }}
+                {{ formatValue(row.prevValue) }}<span class="block text-xs">{{ row.prevMonth ?? 'No earlier entry' }}</span>
               </td>
               <td class="py-2 pr-3">
                 <div class="flex flex-col items-end gap-1">
@@ -744,8 +772,10 @@ async function saveAll(): Promise<void> {
                     :placeholder="row.categoryType === 'liability' ? 'e.g. -50000' : 'e.g. 10000'"
                     step="1"
                     :aria-label="`Value for ${row.assetName} in ${displayedMonth}`"
+              :aria-invalid="!!row.rowError"
+                    :aria-errormessage="row.rowError ? `desktop-error-${row.assetId}` : undefined"
                     class="wt-number-input wt-month-value-input w-36"
-                    :disabled="loading || saving"
+                    :disabled="loading || saving || rowsMonth !== selectedMonth || !!error"
                     :class="[
                       row.rowError ? 'wt-month-value-input-error' : '',
                       row.categoryType === 'liability' ? 'text-red-600 dark:text-red-300' : 'text-gray-900 dark:text-zinc-100',
@@ -759,20 +789,41 @@ async function saveAll(): Promise<void> {
                 </div>
               </td>
               <td class="py-2">
-                <span v-if="row.rowError" class="text-xs text-red-600 dark:text-red-400">{{ row.rowError }}</span>
+                <span v-if="row.rowError" :id="`desktop-error-${row.assetId}`" role="alert" class="text-xs text-red-600 dark:text-red-400">{{ row.rowError }}</span>
                 <span
                   v-else-if="row.existingDpId && row.inputValue === row.existingValue"
                   class="text-xs text-emerald-600 dark:text-emerald-400"
-                >✓ saved</span>
+                >{{ isPlannedMonth ? '✓ planned · saved' : '✓ saved' }}</span>
                 <span
                   v-else-if="row.inputValue !== null"
                   class="text-xs text-blue-500 dark:text-blue-400"
-                >unsaved</span>
+                >Unsaved</span>
+                <span v-else class="text-xs text-gray-500 dark:text-zinc-400">No entry</span>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </template>
+      <div class="sticky bottom-0 z-20 flex w-full flex-wrap items-center gap-2 rounded-lg border border-gray-200 bg-white p-2 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
+        <span class="mr-auto text-sm" role="status">{{ itemsToSaveCount }} pending · {{ visibleRows.filter(r => r.existingDpId).length }}/{{ visibleRows.length }} {{ isPlannedMonth ? 'planned entries saved' : 'saved' }}</span>
+        <Button
+          label="Copy earlier values"
+          icon="pi pi-copy"
+          outlined
+          class="min-h-11"
+          :disabled="!hasCopyForwardCandidates || loading || saving || rowsMonth !== selectedMonth || !!error"
+          title="Copy each item’s latest earlier recorded value into empty inputs; review and save to record it"
+          @click="copyForward"
+        />
+        <Button
+          :label="saving ? 'Saving…' : `Save All${itemsToSaveCount > 0 ? ` (${itemsToSaveCount})` : ''}`"
+          icon="pi pi-save"
+          class="min-h-11"
+          :loading="saving"
+          :disabled="itemsToSaveCount === 0 || saving || loading || rowsMonth !== selectedMonth || !!error"
+          @click="saveAll"
+        />
+      </div>
   </div>
 </template>

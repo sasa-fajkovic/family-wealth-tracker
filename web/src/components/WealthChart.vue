@@ -22,11 +22,12 @@ import {
 import ChartDataLabels from 'chartjs-plugin-datalabels'
 import type { Context as DatalabelsContext } from 'chartjs-plugin-datalabels'
 import type { SummaryResponse } from '../types/index'
+import { hasObservation } from '../utils/observations'
 import type { ChartType } from '../composables/useChartType'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
-import { plannedBarColor, plannedPointRadius, plannedSegment, todayIndex } from '../utils/plannedChart'
+import { plannedBarColor, plannedSegment, todayIndex } from '../utils/plannedChart'
 
 ChartJS.register(
   CategoryScale,
@@ -114,12 +115,12 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       labels: labels.value,
       datasets: [{
         label: 'Total Income',
-        data: displayedTotals.value,
+        data: displayedTotals.value.map((value, i) => hasObservation(props.data, i) ? value : null),
         borderColor: color,
         backgroundColor: color + '22',
         fill: true,
         tension: 0.2,
-        pointRadius: plannedPointRadius(today.value),
+        pointRadius: 3,
         pointHoverRadius: 5,
         borderWidth: 3,
         segment: plannedSegment(today.value),
@@ -132,7 +133,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
       labels: labels.value,
       datasets: series.map(s => ({
         label: s.category_name,
-        data: s.values,
+        data: s.values.map((value, i) => hasObservation(props.data, i, s.category_id) ? value : null),
         backgroundColor: plannedBarColor(s.color, today.value),
         borderColor: plannedBarColor(s.color, today.value, '', '88'),
         borderWidth: 1,
@@ -144,12 +145,12 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
 
   const datasets: ChartData<'line'>['datasets'] = series.map(s => ({
     label: s.category_name,
-    data: s.values,
+    data: s.values.map((value, i) => hasObservation(props.data, i, s.category_id) ? value : null),
     borderColor: s.color,
     backgroundColor: isArea ? s.color + '99' : s.color,
     fill: isArea,
     tension: 0.1,
-    pointRadius: 0,
+    pointRadius: (context) => context.dataIndex > today.value && hasObservation(props.data, context.dataIndex, s.category_id) ? 3 : 0,
     borderWidth: 2,
     // Liabilities: dashed line for visual distinction
     borderDash: s.category_type === 'liability' ? [5, 4] : undefined,
@@ -162,7 +163,7 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
     const t = getChartTokens(theme.value === 'dark')
     datasets.push({
       label: 'Total',
-      data: displayedTotals.value,
+      data: displayedTotals.value.map((value, i) => hasObservation(props.data, i) ? value : null),
       borderColor: t.totalLine,
       backgroundColor: 'transparent',
       fill: false,
@@ -178,9 +179,13 @@ const chartData = computed((): ChartData<'line'> | ChartData<'bar'> => {
   return { labels: labels.value, datasets } as ChartData<'line'>
 })
 
+const observedPieSeries = computed(() => visibleSeries.value.filter(s => hasObservation(props.data, today.value, s.category_id)))
+const positivePieSeries = computed(() => observedPieSeries.value.filter(s => (s.values[today.value] ?? 0) > 0))
+const hasNegativePieValues = computed(() => observedPieSeries.value.some(s => (s.values[today.value] ?? 0) < 0))
+
 const pieData = computed((): ChartData<'pie'> => {
-  const series = visibleSeries.value
-  const values = series.map(s => Math.max(0, s.values[today.value] ?? 0))
+  const series = positivePieSeries.value
+  const values = series.map(s => s.values[today.value] ?? 0)
   return {
     labels: series.map(s => s.category_name),
     datasets: [{
@@ -207,9 +212,11 @@ const pieOptions = computed((): ChartOptions<'pie'> => {
       if (hits.length === 0) return
       const sliceIndex = hits[0].index
       const label = chart.data.labels?.[sliceIndex]
+      const pieSeries = positivePieSeries.value
+      const originalIndex = visibleSeries.value.indexOf(pieSeries[sliceIndex])
       emit('point-click', {
         monthIndex: lastMonthIndex,
-        datasetIndex: sliceIndex,
+        datasetIndex: originalIndex,
         datasetLabel: typeof label === 'string' ? label : '',
       })
     },
@@ -366,10 +373,11 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
 <template>
   <div class="h-[420px]">
     <Pie
-      v-if="chartType === 'pie'"
+      v-if="chartType === 'pie' && positivePieSeries.length"
       :data="(pieData as ChartData<'pie'>)"
       :options="(pieOptions as ChartOptions<'pie'>)"
     />
+    <div v-else-if="chartType === 'pie'" class="flex h-full items-center justify-center text-center text-sm text-gray-500 dark:text-zinc-400">No positive values to show in the pie chart for this month.</div>
     <Bar
       v-else-if="chartType === 'bar'"
       :data="(chartData as ChartData<'bar'>)"
@@ -381,4 +389,12 @@ const chartOptions = computed((): ChartOptions<'line'> | ChartOptions<'bar'> => 
       :options="(chartOptions as ChartOptions<'line'>)"
     />
   </div>
+  <p v-if="chartType === 'pie' && positivePieSeries.length" class="mt-3 text-sm text-gray-600 dark:text-zinc-400">Pie percentages are shares of positive values only.<template v-if="hasNegativePieValues"> Negative values are omitted from the pie; see the signed values below.</template></p>
+  <p v-else-if="chartType === 'pie' && hasNegativePieValues" class="mt-3 text-sm text-gray-600 dark:text-zinc-400">Negative values are omitted from the pie; see the signed values below.</p>
+  <details v-if="chartType === 'pie'" class="mt-3"><summary class="cursor-pointer text-sm">View pie chart data</summary>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Pie chart values</caption><thead><tr><th scope="col">Category</th><th scope="col">Value</th></tr></thead><tbody><tr v-for="series in visibleSeries" :key="series.category_id"><th scope="row">{{ series.category_name }}</th><td>{{ hasObservation(data, today, series.category_id) ? eurFmt.format(series.values[today] ?? 0) : '—' }}</td></tr></tbody></table></div>
+  </details>
+  <details class="mt-3"><summary class="cursor-pointer text-sm">View chart data</summary>
+    <div class="overflow-x-auto"><table class="wt-data-table text-sm"><caption class="sr-only">Chart values by month</caption><thead><tr><th scope="col">Month</th><th scope="col">Timeframe</th><th v-for="series in visibleSeries" :key="series.category_id" scope="col">{{ series.category_name }}</th></tr></thead><tbody><tr v-for="(month, i) in data.months" :key="month"><th scope="row">{{ month }}</th><td>{{ data.current_month && month.slice(0, 7) > data.current_month ? 'Future' : 'Past / current' }}</td><td v-for="series in visibleSeries" :key="series.category_id">{{ hasObservation(data, i, series.category_id) ? eurFmt.format(series.values[i] ?? 0) : '—' }}</td></tr></tbody></table></div>
+  </details>
 </template>

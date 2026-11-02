@@ -16,6 +16,7 @@
 //  6. writeFileAtomic the new content over the live file.
 //  7. Audit-log success only after step 6 returns.
 
+import { validationException } from '../util/validationException.js'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { HTTPException } from 'hono/http-exception'
@@ -24,10 +25,11 @@ import { dirname, resolve, basename } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { parse, stringify } from 'yaml'
 import writeFileAtomic from 'write-file-atomic'
-import { DB_PATH, CSV_PATH } from '../storage/index.js'
+import { DB_PATH, CSV_PATH, recoverPendingTransaction } from '../storage/index.js'
 import { dbMutex } from '../storage/mutex.js'
 import { decodeDataPoints, encodeDataPoints } from '../storage/csv.js'
 import { auditLog } from '../audit/index.js'
+import { validateDatabase as validateDatabaseShape, validatePoints, duplicateKeys } from '../models/validation.js'
 import type { Database, DataPoint } from '../models/index.js'
 
 const router = new Hono()
@@ -125,28 +127,21 @@ function validateDatabase(raw: string): Database {
   try {
     parsed = parse(raw)
   } catch (err) {
-    throw new HTTPException(400, { message: `Invalid YAML: ${(err as Error).message}` })
+    throw validationException(err, 'Invalid YAML')
   }
-  if (!parsed || typeof parsed !== 'object') {
-    throw new HTTPException(400, { message: 'YAML root must be an object' })
+  try { return validateDatabaseShape(parsed) } catch (error) {
+    throw validationException(error, 'Invalid database')
   }
-  const db = parsed as Partial<Database>
-  if (!Array.isArray(db.categories)) throw new HTTPException(400, { message: 'YAML missing required `categories` array' })
-  if (!Array.isArray(db.assets)) throw new HTTPException(400, { message: 'YAML missing required `assets` array' })
-  if (!Array.isArray(db.persons)) throw new HTTPException(400, { message: 'YAML missing required `persons` array' })
+}
 
-  // Per-record sanity: every asset must reference an existing category + person from THIS file.
-  const catIds = new Set(db.categories.map(c => c.id))
-  const personIds = new Set(db.persons.map(p => p.id))
-  for (const a of db.assets) {
-    if (!catIds.has(a.category_id)) {
-      throw new HTTPException(400, { message: `Asset "${a.id}" references missing category "${a.category_id}"` })
-    }
-    if (!personIds.has(a.person_id)) {
-      throw new HTTPException(400, { message: `Asset "${a.id}" references missing person "${a.person_id}"` })
-    }
+function replacementCounts(current: { id: string }[], incoming: { id: string }[]) {
+  const existing = new Set(current.map(record => record.id))
+  const next = new Set(incoming.map(record => record.id))
+  return {
+    added: incoming.filter(record => !existing.has(record.id)).length,
+    replaced: incoming.filter(record => existing.has(record.id)).length,
+    removed: current.filter(record => !next.has(record.id)).length,
   }
-  return db as Database
 }
 
 function findOrphanedDataPoints(newDb: Database, currentPoints: DataPoint[]): string[] {
@@ -160,6 +155,7 @@ function findOrphanedDataPoints(newDb: Database, currentPoints: DataPoint[]): st
 
 router.post('/database', async (c) => {
   const force = c.req.query('force') === 'true'
+  const preview = c.req.query('preview') === 'true'
   const { buf, filename } = await readUpload(c, MAX_YAML_BYTES)
   checkExtension(filename, ['.yaml', '.yml'])
 
@@ -167,13 +163,25 @@ router.post('/database', async (c) => {
   const newDb = validateDatabase(text)
 
   return dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     // Referential integrity: imported assets must cover existing data points (else orphan).
     const currentCsvRaw = await readFile(CSV_PATH, 'utf8').catch(err => {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
       throw err
     })
     const currentPoints = currentCsvRaw ? decodeDataPoints(currentCsvRaw) : []
+    try { validatePoints(currentPoints, newDb, true) } catch (error) {
+      throw validationException(error, 'Database conflicts with existing data points')
+    }
     const orphans = findOrphanedDataPoints(newDb, currentPoints)
+    if (preview) {
+      const current = validateDatabaseShape(parse((await readOriginal(DB_PATH)).toString('utf8')))
+      return c.json({ preview: true,
+        counts: { categories: newDb.categories.length, assets: newDb.assets.length, persons: newDb.persons.length },
+        changes: { categories: replacementCounts(current.categories, newDb.categories), assets: replacementCounts(current.assets, newDb.assets), persons: replacementCounts(current.persons, newDb.persons) },
+        conflicts: [], orphans: orphans.length ? [{ kind: 'asset_id', ids: orphans }] : [], needs_force: orphans.length > 0,
+      })
+    }
     if (orphans.length > 0 && !force) {
       const report: OrphanReport = {
         needs_force: true,
@@ -216,6 +224,7 @@ router.post('/database', async (c) => {
 
 router.post('/datapoints', async (c) => {
   const force = c.req.query('force') === 'true'
+  const preview = c.req.query('preview') === 'true'
   const { buf, filename } = await readUpload(c, MAX_CSV_BYTES)
   checkExtension(filename, ['.csv'])
 
@@ -224,18 +233,33 @@ router.post('/datapoints', async (c) => {
   try {
     parsed = decodeDataPoints(text)
   } catch (err) {
-    throw new HTTPException(400, { message: `Invalid CSV: ${(err as Error).message}` })
+    throw validationException(err, 'Invalid CSV')
   }
 
   return dbMutex.runExclusive(async () => {
+    await recoverPendingTransaction()
     // Referential integrity: imported data points must reference assets that exist NOW.
     const currentDbRaw = await readFile(DB_PATH, 'utf8')
-    const currentDb = parse(currentDbRaw) as Database
+    const currentDb = validateDatabaseShape(parse(currentDbRaw))
+    try {
+      validatePoints(parsed, currentDb, true)
+    } catch (error) {
+      throw validationException(error, 'Invalid CSV')
+    }
     const liveAssetIds = new Set(currentDb.assets.map(a => a.id))
     const unknownIds = new Set<string>()
     for (const dp of parsed) {
       if (!liveAssetIds.has(dp.asset_id)) unknownIds.add(dp.asset_id)
     }
+    const duplicates = duplicateKeys(parsed)
+    const conflicts = duplicates.length ? [{ kind: 'duplicate_asset_month', ids: duplicates }] : []
+    const orphans = unknownIds.size ? [{ kind: 'asset_id', ids: [...unknownIds].sort() }] : []
+    if (preview) {
+      const current = decodeDataPoints((await readOriginal(CSV_PATH)).toString('utf8'))
+      return c.json({ preview: true, counts: { data_points: parsed.length },
+        changes: { data_points: replacementCounts(current, parsed) }, conflicts, orphans, needs_force: unknownIds.size > 0 })
+    }
+    if (duplicates.length) throw new HTTPException(400, { message: 'Duplicate asset/month keys in CSV; repair explicitly before importing' })
     if (unknownIds.size > 0 && !force) {
       const report: OrphanReport = {
         needs_force: true,

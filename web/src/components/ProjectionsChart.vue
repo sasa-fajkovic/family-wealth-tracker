@@ -22,6 +22,7 @@ import {
 } from 'chart.js'
 import ChartDataLabels from 'chartjs-plugin-datalabels'
 import type { ProjectionsResponse } from '../types/index'
+import { visibleProjectionSeries } from '../utils/projectionSeries'
 import { useTheme } from '../composables/useTheme'
 import { buildTooltipDefaults, getChartTokens } from '../theme/tokens'
 import { eurFmt, compactFmt } from '../utils/formatters'
@@ -62,38 +63,29 @@ const allMonths = computed(() => [
 ])
 
 // Merge historical+projected series, filtering hidden categories
-const mergedSeries = computed(() => {
-  const hist = props.data.historical.series.filter(
-    s => !props.hiddenCategories.has(s.category_id),
-  )
-  const proj = props.data.projection.series
-  return hist.map(hs => {
-    const ps = proj.find(p => p.category_id === hs.category_id)
-    return {
-      category_id: hs.category_id,
-      category_name: hs.category_name,
-      color: hs.color,
-      histValues: hs.values,
-      projValues: ps?.values ?? Array(props.data.projection.months.length).fill(0),
-    }
-  })
-})
+const mergedSeries = computed(() => visibleProjectionSeries(props.data, props.hiddenCategories).map(series => ({
+  category_id: series.id,
+  category_name: series.name,
+  color: series.color,
+  canBridge: series.canBridge,
+  histValues: series.historical,
+  projValues: series.projected,
+})))
 
 // When categories are hidden, recompute totals for visible series only.
 // This keeps the "Total" line consistent with what's actually shown in the chart.
 const adjustedHistTotals = computed(() => {
-  if (props.hiddenCategories.size === 0) return props.data.historical.totals
   const len = props.data.historical.months.length
   return Array.from({ length: len }, (_, i) =>
-    mergedSeries.value.reduce((sum, s) => sum + (s.histValues[i] ?? 0), 0),
+    mergedSeries.value.some(s => s.histValues[i] !== null) ? mergedSeries.value.reduce((sum, s) => sum + (s.histValues[i] ?? 0), 0) : null,
   )
 })
 
 const adjustedProjTotals = computed(() => {
-  if (props.hiddenCategories.size === 0) return props.data.projection.totals
+  if (props.hiddenCategories.size === 0) return props.data.projection.totals.map((value, i) => props.data.projection.available?.[i] === false ? null : value)
   const len = props.data.projection.months.length
   return Array.from({ length: len }, (_, i) =>
-    mergedSeries.value.reduce((sum, s) => sum + (s.projValues[i] ?? 0), 0),
+    mergedSeries.value.some(s => s.projValues[i] !== null) ? mergedSeries.value.reduce((sum, s) => sum + (s.projValues[i] ?? 0), 0) : null,
   )
 })
 
@@ -167,7 +159,9 @@ function buildNullPaddedDatasets(
   }
 
   for (const s of mergedSeries.value) {
-    const negative = [...s.histValues, ...s.projValues].reduce((a, v) => a + v, 0) < 0
+    const hasHistorical = s.histValues.some(value => value !== null)
+    const hasProjected = s.projValues.some(value => value !== null)
+    const negative = [...s.histValues, ...s.projValues].reduce<number>((a, v) => a + (v ?? 0), 0) < 0
     // Historical dataset: actual values then nulls
     const histPad = Array(projLen).fill(null)
     const histData = [...s.histValues, ...histPad]
@@ -175,7 +169,7 @@ function buildNullPaddedDatasets(
     // Projected dataset: nulls for history (except bridge), then projected values
     // Bridge: last historical value repeated at boundary for visual continuity
     const bridgeNulls = Array(histLen - 1).fill(null)
-    const bridge = s.histValues[histLen - 1] ?? null
+    const bridge = !isBar && s.canBridge && s.projValues[0] !== null ? s.histValues[histLen - 1] ?? null : null
     const projData = [...bridgeNulls, bridge, ...s.projValues]
 
     if (isBar) {
@@ -187,7 +181,7 @@ function buildNullPaddedDatasets(
         borderWidth: 1,
         stack: 'wealth',
         _projChart: true,
-        _hideFromLegend: false,
+        _hideFromLegend: !hasHistorical,
         _categoryId: s.category_id,
         _phase: 'historical',
       })
@@ -200,7 +194,7 @@ function buildNullPaddedDatasets(
         borderDash: [4, 4],
         stack: 'wealth',
         _projChart: true,
-        _hideFromLegend: true,
+        _hideFromLegend: hasHistorical || !hasProjected,
         _categoryId: s.category_id,
         _phase: 'projected',
       })
@@ -217,7 +211,7 @@ function buildNullPaddedDatasets(
         borderWidth: 2,
         stack: isArea ? `wealth-hist${negative ? '-neg' : ''}` : undefined,
         _projChart: true,
-        _hideFromLegend: false,
+        _hideFromLegend: !hasHistorical,
         _categoryId: s.category_id,
         _phase: 'historical',
       })
@@ -233,7 +227,7 @@ function buildNullPaddedDatasets(
         borderDash: [5, 5],
         stack: isArea ? `wealth-proj${negative ? '-neg' : ''}` : undefined,
         _projChart: true,
-        _hideFromLegend: true,
+        _hideFromLegend: hasHistorical || !hasProjected,
         _categoryId: s.category_id,
         _phase: 'projected',
       })
@@ -243,7 +237,8 @@ function buildNullPaddedDatasets(
   // Total line — uses adjusted totals so hidden categories are excluded
   if (showTotal.value) {
     const totalHistData = [...adjustedHistTotals.value, ...Array(projLen).fill(null)]
-    const totalBridge = adjustedHistTotals.value[histLen - 1] ?? null
+    const totalBridge = !isBar && mergedSeries.value.every(series => series.canBridge) && adjustedProjTotals.value[0] !== null
+      ? adjustedHistTotals.value[histLen - 1] ?? null : null
     const totalProjData = [...Array(histLen - 1).fill(null), totalBridge, ...adjustedProjTotals.value]
 
     const totalBase = {

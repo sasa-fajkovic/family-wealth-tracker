@@ -7,6 +7,8 @@ export interface Category {
   projected_yearly_growth: number  // decimal, e.g. 0.08 = 8% annual growth
   color: string                    // hex color, e.g. '#6366f1'
   type: 'asset' | 'cash-inflow' | 'liability'
+  include_in_current_wealth?: boolean
+  include_in_projections?: boolean
 }
 
 export interface Person {
@@ -20,6 +22,9 @@ export interface Asset {
   category_id: string
   projected_yearly_growth: number | null   // null = inherit from parent Category; NOT optional (?)
   notes?: string
+  include_in_current_wealth?: boolean | null
+  include_in_projections?: boolean | null
+  closed_at?: string | null
   person_id: string                        // required; every asset must belong to a person
   created_at: string                       // ISO 8601 timestamp, immutable after create
   show_from?: string                       // YYYY-MM, inclusive lower bound for Monthly Update visibility

@@ -1,7 +1,9 @@
 // server/src/calc/summary.ts
 import type { DataPoint, Asset, Category } from '../models/index.js'
+import { isActiveInMonth, hasRecordedClosingZero } from './closure.js'
 
 export type FillMode = 'stock' | 'flow'
+export type ObservationStatus = 'observed' | 'carried' | 'missing'
 
 /**
  * Fills monthly values for each asset.
@@ -16,7 +18,7 @@ export type FillMode = 'stock' | 'flow'
  * has a value for every asset.
  *
  * Upsert: when multiple data points share the same asset_id + year_month,
- * the one with the lexicographically largest updated_at wins.
+ * the one with the latest updated_at instant wins.
  *
  * SUM-02: upsert semantics (latest updated_at wins)
  * SUM-03: stock mode — LOCF forward from first entry; 0 before first entry
@@ -47,13 +49,13 @@ export function locfFill(
       grouped.get(dp.year_month)!.push(dp)
     }
     for (const [month, dps] of grouped) {
-      const best = dps.reduce((a, b) => (a.updated_at > b.updated_at ? a : b))
+      const best = dps.reduce((a, b) => (Date.parse(a.updated_at) > Date.parse(b.updated_at) ? a : b))
       monthValue.set(month, best.value)
     }
 
     if (mode === 'flow') {
       for (const month of months) {
-        assetMap.set(month, monthValue.get(month) ?? 0)
+        assetMap.set(month, isActiveInMonth(asset, month) ? monthValue.get(month) ?? 0 : 0)
       }
       result.set(asset.id, assetMap)
       continue
@@ -69,7 +71,7 @@ export function locfFill(
     let carry = latestBeforeStart !== undefined ? monthValue.get(latestBeforeStart)! : 0
 
     for (const month of months) {
-      if (month < firstDataMonth) {
+      if (!isActiveInMonth(asset, month) || month < firstDataMonth) {
         assetMap.set(month, 0)              // no data yet
       } else {
         if (monthValue.has(month)) carry = monthValue.get(month)!
@@ -85,7 +87,16 @@ export function locfFill(
 
 // ── SummaryResponse ───────────────────────────────────────────────────────────
 
-export interface SummaryResponse {
+interface PeriodChange {
+  period_start_month: string | null
+  period_delta_available: boolean
+  period_delta_pct_available: boolean
+  period_delta_abs: number
+  period_delta_pct: number
+}
+
+export interface SummaryResponse extends PeriodChange {
+  coverage: { observed: number; carried: number; missing: number; total: number }
   months: string[]
   series: {
     category_id: string
@@ -99,8 +110,6 @@ export interface SummaryResponse {
   gross_assets: number
   total_liabilities: number
   monthly_delta_abs: number
-  period_delta_abs: number
-  period_delta_pct: number
   category_breakdown: {
     category_id: string
     category_name: string
@@ -110,6 +119,9 @@ export interface SummaryResponse {
     pct_of_total: number
   }[]
   asset_series: {
+    closed_at: string | null
+    observation_months: (string | null)[]
+    observation_status: ObservationStatus[]
     asset_id: string
     asset_name: string
     category_id: string
@@ -120,6 +132,9 @@ export interface SummaryResponse {
     values: number[]
   }[]
   asset_breakdown: {
+    closed_at: string | null
+    observation_month: string | null
+    observation_status: ObservationStatus
     asset_id: string
     asset_name: string
     category_id: string
@@ -130,7 +145,11 @@ export interface SummaryResponse {
     value: number
     pct_of_total: number
     monthly_delta_abs: number
+    period_start_month: string | null
+    period_delta_available: boolean
+    period_delta_pct_available: boolean
     period_delta_abs: number
+    period_delta_pct: number
   }[]
 }
 
@@ -148,7 +167,7 @@ export interface SummaryResponse {
  * SUM-04: per-category series (all categories included, even if no assets)
  * SUM-05: per-month totals (sum across all categories)
  * SUM-06: stock — current_total = last element of totals[]; flow — current_total = sum of totals[]
- * SUM-07: period_delta_abs = currentTotal - firstTotal; period_delta_pct = 0 when firstTotal === 0
+ * SUM-07: period deltas start at the first known month in the selected window; availability flags distinguish missing comparisons and zero baselines.
  * SUM-08: category_breakdown with pct_of_total = 0 when currentTotal === 0
  */
 export function aggregateSummary(
@@ -156,7 +175,8 @@ export function aggregateSummary(
   categories: Category[],
   locfData: Map<string, Map<string, number>>,
   months: string[],
-  mode: FillMode = 'stock'
+  mode: FillMode = 'stock',
+  dataPoints: DataPoint[] = [],
 ): SummaryResponse {
   const isFlow = mode === 'flow'
   const sumValues = (vals: number[]) => vals.reduce((s, v) => s + v, 0)
@@ -180,7 +200,13 @@ export function aggregateSummary(
   const asset_series = assets.map(asset => {
     const cat = categoryById.get(asset.category_id)
     const values = months.map(month => locfData.get(asset.id)?.get(month) ?? 0)
+    const observedMonths = [...new Set(dataPoints.filter(dp => dp.asset_id === asset.id && isActiveInMonth(asset, dp.year_month)).map(dp => dp.year_month))].sort()
+    const observation_months = months.map(month => !isActiveInMonth(asset, month) ? null : observedMonths.includes(month) ? month : isFlow ? null : observedMonths.filter(m => m < month).at(-1) ?? null)
+    const observation_status: ObservationStatus[] = months.map((month, i) => observation_months[i] === month ? 'observed' : observation_months[i] ? 'carried' : 'missing')
     return {
+      closed_at: asset.closed_at ?? null,
+      observation_months,
+      observation_status,
       asset_id: asset.id,
       asset_name: asset.name,
       category_id: asset.category_id,
@@ -198,13 +224,10 @@ export function aggregateSummary(
   )
 
   const currentTotal = isFlow ? sumValues(totals) : lastValue(totals)
-  const firstTotal = totals.length > 0 ? totals[0] : 0
-
-  // Period deltas are stock-mode concepts; for flows we report 0.
-  const period_delta_abs = isFlow ? 0 : currentTotal - firstTotal
-  const period_delta_pct = isFlow || firstTotal === 0
-    ? 0
-    : (period_delta_abs / firstTotal) * 100
+  const closedZeros = new Set(assets.filter(asset => hasRecordedClosingZero(asset, dataPoints)).map(asset => asset.id))
+  const period = periodChange(totals, months.map((month, index) =>
+    asset_series.some(asset => asset.observation_status[index] !== 'missing'
+      || (!isFlow && asset.closed_at && month > asset.closed_at && closedZeros.has(asset.asset_id)))), months, isFlow)
 
   // monthly_delta_abs: change from second-to-last month to last month (stock only)
   const monthly_delta_abs = isFlow
@@ -228,12 +251,16 @@ export function aggregateSummary(
     return { category_id: cat.id, category_name: cat.name, color: cat.color, category_type: cat.type, value, pct_of_total }
   })
 
-  const asset_breakdown = asset_series.map(s => {
+  const endpoint = months.at(-1)
+  const asset_breakdown = asset_series.filter(series => !endpoint || isActiveInMonth(series, endpoint)
+    || (isFlow && series.observation_status.some(status => status === 'observed'))).map(s => {
     const value = aggregateValues(s.values)
     const prev = s.values.length >= 2 ? s.values[s.values.length - 2] : lastValue(s.values)
-    const first = s.values.length > 0 ? s.values[0] : 0
     const pct_of_total = currentTotal === 0 ? 0 : (value / currentTotal) * 100
     return {
+      closed_at: s.closed_at,
+      observation_month: s.observation_months.at(-1) ?? null,
+      observation_status: s.observation_status.at(-1) ?? 'missing',
       asset_id: s.asset_id,
       asset_name: s.asset_name,
       category_id: s.category_id,
@@ -244,11 +271,15 @@ export function aggregateSummary(
       value,
       pct_of_total,
       monthly_delta_abs: isFlow ? 0 : lastValue(s.values) - prev,
-      period_delta_abs: isFlow ? 0 : lastValue(s.values) - first,
+      ...periodChange(s.values, s.observation_status.map(status => status !== 'missing'), months, isFlow),
     }
   })
 
-  return {
+  const activeSeries = asset_series.filter(series => !endpoint || isActiveInMonth(series, endpoint))
+  const coverage = { observed: 0, carried: 0, missing: 0, total: activeSeries.length }
+  for (const asset of activeSeries) coverage[asset.observation_status.at(-1) ?? 'missing']++
+  const response = {
+    coverage,
     months,
     series,
     totals,
@@ -256,10 +287,43 @@ export function aggregateSummary(
     gross_assets,
     total_liabilities,
     monthly_delta_abs,
-    period_delta_abs,
-    period_delta_pct,
+    ...period,
     category_breakdown,
     asset_series,
     asset_breakdown,
   }
+  assertFiniteNumbers(response)
+  return response
+}
+
+function periodChange(values: number[], known: boolean[], months: string[], isFlow: boolean): PeriodChange {
+  const first = isFlow ? -1 : known.findIndex(Boolean)
+  const last = values.length - 1
+  const available = first >= 0 && first < last && known[last]
+  const percentageAvailable = available && values[first] !== 0
+  const delta = available ? values[last] - values[first] : 0
+  return {
+    period_start_month: first >= 0 ? months[first] : null,
+    period_delta_available: available,
+    period_delta_pct_available: percentageAvailable,
+    period_delta_abs: delta,
+    period_delta_pct: percentageAvailable ? delta / values[first] * 100 : 0,
+  }
+}
+
+function assertFiniteNumbers(value: unknown): void {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new RangeError('Summary exceeds finite numeric range')
+  if (value !== null && typeof value === 'object') for (const child of Object.values(value)) assertFiniteNumbers(child)
+}
+
+export function observationCoverage(assets: Asset[], categories: Category[], points: DataPoint[], month: string) {
+  const active = assets.filter(asset => isActiveInMonth(asset, month))
+  const coverage = { observed: 0, carried: 0, missing: 0, total: active.length }
+  for (const asset of active) {
+    const months = points.filter(point => point.asset_id === asset.id).map(point => point.year_month)
+    if (months.includes(month)) coverage.observed++
+    else if (categories.find(category => category.id === asset.category_id)?.type !== 'cash-inflow' && months.some(value => value < month)) coverage.carried++
+    else coverage.missing++
+  }
+  return coverage
 }

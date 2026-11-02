@@ -166,7 +166,7 @@ defineExpose({ openCreate })
             <Button icon="pi pi-pencil" text size="small" :aria-label="`Edit person ${row.name}`" @click="modal = { mode: 'edit', item: row }" />
             <Button icon="pi pi-trash" text size="small" severity="danger" :aria-label="`Delete person ${row.name}`"
               :disabled="rows.length === 1"
-              v-tooltip.top="rows.length === 1 ? 'Cannot delete the only person — assets cannot be reassigned' : undefined"
+              v-tooltip.top="rows.length === 1 ? 'Cannot delete the only person — items cannot be reassigned' : undefined"
               @click="handleDeleteClick(row)" />
           </div>
         </template>
@@ -186,7 +186,7 @@ defineExpose({ openCreate })
       <template v-else-if="deleteState?.phase === 'reassign'">
         <div class="flex flex-col gap-3">
           <p class="text-sm text-gray-700 dark:text-zinc-300">
-            <strong>{{ deleteState.affectedAssets.length }}</strong> asset(s) are assigned to this person.
+            <strong>{{ deleteState.affectedAssets.length }}</strong> item(s) are assigned to this person.
             Choose who to reassign them to:
           </p>
           <Select

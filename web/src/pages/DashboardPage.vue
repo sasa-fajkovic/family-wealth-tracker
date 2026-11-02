@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
+import SummaryDataTable from '../components/SummaryDataTable.vue'
 import { useRouter } from 'vue-router'
 import { RouterLink } from 'vue-router'
 import { getSummary, getPersons, getAssets, getCategories, ApiError } from '../api/client'
@@ -13,6 +14,8 @@ import Message from 'primevue/message'
 import Button from 'primevue/button'
 import { useDataRefresh } from '../composables/useDataRefresh'
 import { useShowPlanned } from '../composables/useShowPlanned'
+import { useSharedFilters } from '../composables/useSharedFilters'
+import { hasObservation } from '../utils/observations'
 
 const RANGES: { label: string; value: RangeKey }[] = [
   { label: 'YTD', value: 'ytd' }, { label: '6M',  value: '6m'  },
@@ -21,11 +24,10 @@ const RANGES: { label: string; value: RangeKey }[] = [
   { label: '10Y', value: '10y' }, { label: 'Max', value: 'max' },
 ]
 
-const range = ref<RangeKey>('3y')
+const { range, person } = useSharedFilters()
 const persons = ref<Person[]>([])
 const assets = ref<Asset[]>([])
 const categories = ref<Category[]>([])
-const person = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
 const cashInflowData = ref<SummaryResponse | null>(null)
 const plannedData = ref<SummaryResponse | null>(null)
@@ -35,6 +37,8 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const retryCount = ref(0)
 const inventoryLoading = ref(true)
+const referenceError = ref<string | null>(null)
+let referenceSequence = 0
 const { referenceDataVersion, dataPointsVersion } = useDataRefresh()
 const router = useRouter()
 
@@ -46,17 +50,20 @@ function onTrendChartClick(payload: { kind: 'netWorth' | 'assets' | 'liabilities
 }
 
 async function loadReferenceData() {
+  const sequence = ++referenceSequence
   inventoryLoading.value = true
   try {
     const [personList, assetList, categoryList] = await Promise.all([getPersons(), getAssets(), getCategories()])
+    if (sequence !== referenceSequence) return
+    referenceError.value = null
     persons.value = personList
     assets.value = assetList
     categories.value = categoryList
     if (person.value && !personList.some(p => p.id === person.value)) person.value = null
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error loading setup data'
+    if (sequence === referenceSequence) referenceError.value = err instanceof ApiError ? err.message : 'Unexpected error loading setup data'
   } finally {
-    inventoryLoading.value = false
+    if (sequence === referenceSequence) inventoryLoading.value = false
   }
 }
 
@@ -65,9 +72,10 @@ onMounted(() => {
   loadReferenceData()
 })
 
+let loadSequence = 0
 async function loadSummary() {
+  const sequence = ++loadSequence
   loading.value = true
-  error.value = null
   try {
     const personId = person.value ?? undefined
     const [result, inflowResult, plannedResult, plannedInflowResult] = await Promise.all([
@@ -76,14 +84,16 @@ async function loadSummary() {
       showPlanned.value ? getSummary(range.value, personId, false, true) : null,
       showPlanned.value ? getSummary(range.value, personId, true, true) : null,
     ])
+    if (sequence !== loadSequence) return
+    error.value = null
     data.value = result
     cashInflowData.value = inflowResult
     plannedData.value = plannedResult
     plannedCashInflowData.value = plannedInflowResult
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === loadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
@@ -101,10 +111,11 @@ const personValue = computed({
 
 // Metric cards computed from response
 const eurFmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
-const hasLiabilities = computed(() => data.value && data.value.total_liabilities < 0)
 const inventoryCounts = computed(() => {
   const categoryTypes = new Map(categories.value.map(category => [category.id, category.type]))
-  return assets.value.reduce(
+  const now = new Date()
+  const month = data.value?.current_month ?? `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  return assets.value.filter(asset => (!person.value || asset.person_id === person.value) && (!asset.closed_at || asset.closed_at >= month)).reduce(
     (acc, asset) => {
       const type = categoryTypes.get(asset.category_id) ?? 'asset'
       acc[type] += 1
@@ -115,13 +126,14 @@ const inventoryCounts = computed(() => {
 })
 
 // Empty-state detection: distinguish "no data at all" from "income data only"
+const hasTrackedItems = computed(() => assets.value.some(asset => !person.value || asset.person_id === person.value))
 const hasWealthAssets = computed(() => inventoryCounts.value.asset > 0 || inventoryCounts.value.liability > 0)
 const hasIncomeAssets = computed(() => inventoryCounts.value['cash-inflow'] > 0)
 const showIncomeOnlyHint = computed(() =>
-  !inventoryLoading.value && !loading.value && !hasWealthAssets.value && hasIncomeAssets.value,
+  !inventoryLoading.value && !referenceError.value && !loading.value && !hasWealthAssets.value && hasIncomeAssets.value,
 )
 const showNoAssetsHint = computed(() =>
-  !inventoryLoading.value && !loading.value && !hasWealthAssets.value && !hasIncomeAssets.value,
+  !inventoryLoading.value && !referenceError.value && !loading.value && !hasWealthAssets.value && !hasIncomeAssets.value,
 )
 
 function deltaClass(v: number) {
@@ -139,6 +151,7 @@ function formatSignedEur(v: number) {
       <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
           <SelectButton
+            :allow-empty="false"
             v-model="range"
             :options="RANGES"
             option-label="label"
@@ -153,6 +166,7 @@ function formatSignedEur(v: number) {
       <!-- Person filter -->
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
         <SelectButton
+          :allow-empty="false"
           v-model="personValue"
           :options="personOptions"
           option-label="label"
@@ -165,18 +179,23 @@ function formatSignedEur(v: number) {
       <div v-if="error" class="mb-4">
         <Message severity="error" class="w-full">Could not load data. Check your connection.</Message>
         <div class="mt-2">
-          <Button label="Retry loading data" link @click="retryCount++" />
+          <Button label="Retry loading data" link :disabled="loading" @click="retryCount++" />
         </div>
+      </div>
+
+      <div v-if="referenceError" class="mb-4">
+        <Message severity="error" class="w-full">Could not load people and items: {{ referenceError }}</Message>
+        <Button label="Retry people and items" link :disabled="inventoryLoading" @click="loadReferenceData" />
       </div>
 
       <!-- Empty-state hints (after data loads) -->
       <template v-if="showIncomeOnlyHint">
         <div class="mb-4 rounded-lg border border-teal-200 dark:border-teal-700/60 bg-teal-50 dark:bg-teal-900/20 p-4">
-          <p class="text-sm font-semibold text-teal-900 dark:text-teal-100 mb-1">No wealth assets yet — only income data is tracked</p>
+          <p class="text-sm font-semibold text-teal-900 dark:text-teal-100 mb-1">No active wealth assets — only income data is currently tracked</p>
           <p class="text-sm text-teal-800 dark:text-teal-200 mb-3">
             Your imported data lives on the <RouterLink to="/income" class="underline font-medium">Income page</RouterLink>. To see net worth here, add assets (e.g. ETFs, vehicles, real estate) on the
             <RouterLink to="/admin" class="underline font-medium">Setup page</RouterLink> and record values on the
-            <RouterLink to="/monthly-update" class="underline font-medium">Monthly Update page</RouterLink>.
+            <RouterLink :to="{ path: '/monthly-update', query: person ? { person } : {} }" class="underline font-medium">Monthly Update page</RouterLink>.
           </p>
           <div class="flex flex-wrap gap-2">
             <RouterLink to="/income"><Button label="Open Income" size="small" /></RouterLink>
@@ -186,8 +205,9 @@ function formatSignedEur(v: number) {
       </template>
       <template v-else-if="showNoAssetsHint">
         <div class="mb-4 rounded-lg border border-amber-200 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-900/20 p-4">
-          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-1">No data to display</p>
-          <p class="text-sm text-amber-800 dark:text-amber-200 mb-3">
+          <p class="text-sm font-semibold text-amber-900 dark:text-amber-100 mb-1">{{ hasTrackedItems ? 'No active items to display' : 'No data to display' }}</p>
+          <p v-if="hasTrackedItems" class="text-sm text-amber-800 dark:text-amber-200 mb-3">Review past entries in <RouterLink to="/data-points" class="underline font-medium">History / Corrections</RouterLink> or manage items in Setup.</p>
+          <p v-else class="text-sm text-amber-800 dark:text-amber-200 mb-3">
             Get started by adding categories, assets and persons on the
             <RouterLink to="/admin" class="underline font-medium">Setup page</RouterLink>, or import an existing dataset from there.
           </p>
@@ -195,46 +215,44 @@ function formatSignedEur(v: number) {
         </div>
       </template>
 
+      <p v-if="data && !loading && data.months.length" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">
+        As of {{ data.current_month ?? data.months[data.months.length - 1] }} · Period {{ data.months[0] }} to {{ data.months[data.months.length - 1] }}
+        <span v-if="data.monthly_coverage?.carried"> · {{ data.monthly_coverage.carried }} {{ data.monthly_coverage.carried === 1 ? 'item uses an earlier recorded value' : 'items use earlier recorded values' }}</span>
+      </p>
+
       <!-- Metric cards row -->
       <template v-if="data && cashInflowData && !loading">
-        <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" :class="hasLiabilities ? 'lg:grid-cols-5' : 'lg:grid-cols-4'">
+        <div class="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-2">Tracked Items</p>
-            <div class="space-y-1 text-sm">
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-emerald-700 dark:text-emerald-300">Assets</span>
-                <span class="font-bold tabular-nums text-gray-900 dark:text-zinc-100">{{ inventoryLoading ? '—' : inventoryCounts.asset }}</span>
-              </div>
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-red-600 dark:text-red-300">Liabilities</span>
-                <span class="font-bold tabular-nums text-gray-900 dark:text-zinc-100">{{ inventoryLoading ? '—' : inventoryCounts.liability }}</span>
-              </div>
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-teal-700 dark:text-teal-300">Income</span>
-                <span class="font-bold tabular-nums text-gray-900 dark:text-zinc-100">{{ inventoryLoading ? '—' : inventoryCounts['cash-inflow'] }}</span>
-              </div>
-            </div>
+            <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Net Worth</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ hasObservation(data, data.months.length - 1) ? eurFmt.format(data.current_total) : '—' }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Gross Assets</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(data.gross_assets) }}</p>
-          </div>
-          <div v-if="hasLiabilities" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Liabilities</p>
-            <p class="text-lg font-bold text-red-600 dark:text-red-400 tabular-nums">{{ eurFmt.format(data.total_liabilities) }}</p>
+            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ hasObservation(data, data.months.length - 1, undefined, 'asset') ? eurFmt.format(data.gross_assets) : '—' }}</p>
+            <p class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Asset values before subtracting debt</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
-            <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Net Worth</p>
-            <p class="text-lg font-bold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(data.current_total) }}</p>
+            <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Liabilities</p>
+            <p class="text-lg font-bold text-red-600 dark:text-red-400 tabular-nums">{{ hasObservation(data, data.months.length - 1, undefined, 'liability') ? eurFmt.format(data.total_liabilities) : '—' }}</p>
           </div>
           <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Period Change</p>
-            <p :class="['text-lg font-bold tabular-nums', deltaClass(data.period_delta_abs)]">
-              {{ formatSignedEur(data.period_delta_abs) }}
+            <p :class="['text-lg font-bold tabular-nums', data.period_delta_available ? deltaClass(data.period_delta_abs) : 'text-gray-500 dark:text-zinc-400']">
+              {{ data.period_delta_available ? formatSignedEur(data.period_delta_abs) : '—' }}
             </p>
+            <p v-if="data.period_delta_available && data.period_start_month" class="mt-1 text-xs text-gray-500 dark:text-zinc-400">Since {{ data.period_start_month }}</p>
           </div>
         </div>
       </template>
+
+      <div v-if="data?.monthly_coverage && !loading" class="mb-4 text-sm text-gray-600 dark:text-zinc-400">
+        <RouterLink :to="{ path: '/monthly-update', query: person ? { person } : {} }" class="underline font-medium">Monthly entries: {{ data.monthly_coverage.observed }}/{{ data.monthly_coverage.total }} recorded</RouterLink>
+        <span> · {{ data.monthly_coverage.carried }} using an earlier recorded value · {{ data.monthly_coverage.missing }} with no value available</span>
+        <RouterLink v-if="data.monthly_coverage.observed < data.monthly_coverage.total" :to="{ path: '/monthly-update', query: { month: data.current_month ?? data.months[data.months.length - 1], ...(person ? { person } : {}), missing: '1' } }" class="ml-2 underline font-medium">Update missing entries</RouterLink>
+        <span v-if="showPlanned"> · future entries shown in charts</span>
+        <span v-if="!inventoryLoading && !referenceError"> · Tracked: {{ inventoryCounts.asset }} {{ inventoryCounts.asset === 1 ? 'asset' : 'assets' }}, {{ inventoryCounts.liability }} {{ inventoryCounts.liability === 1 ? 'liability' : 'liabilities' }}, {{ inventoryCounts['cash-inflow'] }} income {{ inventoryCounts['cash-inflow'] === 1 ? 'source' : 'sources' }}</span>
+      </div>
 
       <!-- Loading skeleton -->
       <template v-if="loading">
@@ -248,6 +266,8 @@ function formatSignedEur(v: number) {
 
       <!-- Dashboard trends -->
       <template v-else-if="data && cashInflowData">
+        <SummaryDataTable :data="plannedData ?? data" title="wealth trends" />
+        <SummaryDataTable :data="plannedCashInflowData ?? cashInflowData" title="income trend" />
         <DashboardTrendCharts
           :data="plannedData ?? data"
           :cash-inflow-data="plannedCashInflowData ?? cashInflowData"

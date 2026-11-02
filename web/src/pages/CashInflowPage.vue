@@ -14,6 +14,7 @@ import Button from 'primevue/button'
 import { useChartType } from '../composables/useChartType'
 import { useDataRefresh } from '../composables/useDataRefresh'
 import { useShowPlanned } from '../composables/useShowPlanned'
+import { useSharedFilters } from '../composables/useSharedFilters'
 
 const RANGES: { label: string; value: RangeKey }[] = [
   { label: 'YTD', value: 'ytd' }, { label: '6M',  value: '6m'  },
@@ -22,10 +23,9 @@ const RANGES: { label: string; value: RangeKey }[] = [
   { label: '10Y', value: '10y' }, { label: 'Max', value: 'max' },
 ]
 
-const range = ref<RangeKey>('3y')
+const { range, person } = useSharedFilters()
 const persons = ref<Person[]>([])
 const assets = ref<Asset[]>([])
-const person = ref<string | null>(null)
 const data = ref<SummaryResponse | null>(null)
 const plannedData = ref<SummaryResponse | null>(null)
 const { showPlanned } = useShowPlanned()
@@ -33,60 +33,62 @@ const disabledSourceIds = ref<Set<string>>(new Set())
 const loading = ref(true)
 const error = ref<string | null>(null)
 const retryCount = ref(0)
+const referenceError = ref<string | null>(null)
+const referenceLoading = ref(false)
+let referenceSequence = 0
 const { chartType, setChartType } = useChartType('cashinflow-chart-type-v2', 'trend')
 const { referenceDataVersion, dataPointsVersion } = useDataRefresh()
 const router = useRouter()
 
 const eurFmt = new Intl.NumberFormat('de-DE', { style: 'currency', currency: 'EUR' })
 
-async function loadPersons() {
+async function loadReferenceData() {
+  const sequence = ++referenceSequence
+  referenceLoading.value = true
   try {
-    const list = await getPersons()
+    const [list, items] = await Promise.all([getPersons(), getAssets()])
+    if (sequence !== referenceSequence) return
     persons.value = list
+    assets.value = items
+    referenceError.value = null
     if (person.value && !list.some(p => p.id === person.value)) person.value = null
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error loading people'
-  }
-}
-
-async function loadAssets() {
-  try {
-    assets.value = await getAssets()
-  } catch (err) {
-    // Asset list is only used for click-drill resolution; failure is non-fatal
-    console.warn('Income page: failed to load assets', err)
+    if (sequence === referenceSequence) referenceError.value = err instanceof ApiError ? err.message : 'Unexpected error loading setup data'
+  } finally {
+    if (sequence === referenceSequence) referenceLoading.value = false
   }
 }
 
 onMounted(() => {
   document.title = 'Income — WealthTrack'
-  loadPersons()
-  loadAssets()
+  loadReferenceData()
 })
 
+let loadSequence = 0
 async function loadSummary() {
+  const sequence = ++loadSequence
   loading.value = true
-  error.value = null
   try {
     const personId = person.value ?? undefined
     const [result, planned] = await Promise.all([
       getSummary(range.value, personId, true),
       showPlanned.value ? getSummary(range.value, personId, true, true) : null,
     ])
+    if (sequence !== loadSequence) return
+    error.value = null
     data.value = result
     plannedData.value = planned
   } catch (err) {
-    error.value = err instanceof ApiError ? err.message : 'Unexpected error'
+    if (sequence === loadSequence) error.value = err instanceof ApiError ? err.message : 'Unexpected error'
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
 watch([range, person, showPlanned, retryCount, referenceDataVersion, dataPointsVersion], loadSummary, { immediate: true })
 watch(person, () => { disabledSourceIds.value = new Set() })
 watch(referenceDataVersion, () => {
-  loadPersons()
-  loadAssets()
+  loadReferenceData()
 })
 
 const personOptions = computed(() => [
@@ -101,11 +103,11 @@ const isEmpty = computed(() => !loading.value && data.value && data.value.series
 
 // Summary stats — when person is selected, derive from enabled sources only
 const totalInflow = computed(() => displayData.value?.current_total ?? data.value?.current_total ?? 0)
-const monthsWithData = computed(() => {
-  const totals = displayData.value?.totals ?? data.value?.totals
-  if (!totals) return 0
-  return totals.filter(t => t > 0).length
-})
+const monthsWithData = computed(() => data.value?.months.filter((_, i) =>
+  data.value?.asset_series.some(series => !disabledSourceIds.value.has(series.asset_id) && series.observation_status?.[i] === 'observed')
+).length ?? 0)
+const noSourcesSelected = computed(() => person.value !== null && personSources.value.length > 0 && personSources.value.every(source => source.disabled))
+const missingMonths = computed(() => (data.value?.months.length ?? 0) - monthsWithData.value)
 const avgMonthlyInflow = computed(() => {
   const months = monthsWithData.value
   return months > 0 ? totalInflow.value / months : 0
@@ -122,7 +124,7 @@ const chartSubtitle = computed(() => {
 const topSources = computed(() => {
   if (person.value !== null || !displayData.value) return []
   return [...displayData.value.category_breakdown]
-    .filter(r => r.value > 0)
+    .filter(r => r.value !== 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
 })
@@ -132,10 +134,12 @@ const topSources = computed(() => {
 // (so the user can click them back on).
 const personSources = computed(() => {
   if (person.value === null || !data.value) return []
-  const groups = new Map<string, { id: string; name: string; color: string; total: number }>()
-  data.value.asset_series.forEach((series, index) => {
-    const total = series.values.reduce((sum, v) => sum + v, 0)
-    if (total <= 0) return
+  const groups = new Map<string, { id: string; name: string; color: string; total: number; hasRecordedIncome: boolean }>()
+  const visibleSource = showPlanned.value ? plannedData.value ?? data.value : data.value
+  visibleSource.asset_series.forEach((series, index) => {
+    const actual = data.value!.asset_series.find(item => item.asset_id === series.asset_id)
+    const total = actual?.values.reduce((sum, v) => sum + v, 0) ?? 0
+    if (!series.observation_status?.includes('observed')) return
     const existing = groups.get(series.asset_id)
     if (existing) {
       existing.total += total
@@ -145,6 +149,7 @@ const personSources = computed(() => {
         name: series.asset_name,
         color: series.color || colorAt(index),
         total,
+        hasRecordedIncome: actual?.observation_status?.includes('observed') ?? false,
       })
     }
   })
@@ -160,6 +165,7 @@ const personSources = computed(() => {
       value: g.total,
       pct_of_total: enabledTotal === 0 ? 0 : (g.total / enabledTotal) * 100,
       disabled: disabledSourceIds.value.has(g.id),
+      hasRecordedIncome: g.hasRecordedIncome,
     }))
 })
 
@@ -198,6 +204,7 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
     name: string
     color: string
     values: number[]
+    observed: boolean
   }>()
 
   source.asset_series.forEach((series, index) => {
@@ -208,18 +215,20 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
     const existing = groups.get(id)
     if (existing) {
       existing.values = existing.values.map((value, valueIndex) => value + (series.values[valueIndex] ?? 0))
+      existing.observed ||= series.observation_status.some(status => status === 'observed')
     } else {
       groups.set(id, {
         id,
         name,
         color: groupByPerson ? colorAt(groups.size) : series.color || colorAt(index),
         values: [...series.values],
+        observed: series.observation_status.some(status => status === 'observed'),
       })
     }
   })
 
   const series = [...groups.values()]
-    .filter(group => group.values.some(v => v > 0))
+    .filter(group => group.observed)
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(group => ({
       category_id: group.id,
@@ -250,6 +259,9 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
 
   return {
     ...source,
+    asset_series: source.asset_series
+      .filter(series => groupByPerson || !disabledSourceIds.value.has(series.asset_id))
+      .map(series => ({ ...series, category_id: groupByPerson ? series.person_id : series.asset_id })),
     series,
     totals,
     current_total: currentTotal,
@@ -260,6 +272,19 @@ function buildDisplayData(source: SummaryResponse | null): SummaryResponse | nul
 const displayData = computed(() => buildDisplayData(data.value))
 // The chart may run past today into planned months; the summary cards always use displayData.
 const chartDisplayData = computed(() => (plannedData.value ? buildDisplayData(plannedData.value) : displayData.value))
+const actualRange = computed(() => {
+  const months = data.value?.months ?? []
+  return months.length ? `${months[0]} – ${data.value?.current_month ?? months[months.length - 1]}` : null
+})
+const plannedTimeline = computed(() => {
+  const source = chartDisplayData.value
+  const current = data.value?.current_month
+  if (!source || !current || !showPlanned.value) return null
+  const future = source.months.map((month, index) => ({ month, index })).filter(item => item.month > current)
+  const observed = future.filter(item => source.asset_series.some(series => series.observation_status?.[item.index] === 'observed'))
+  if (!observed.length) return null
+  return { start: future[0].month, end: future[future.length - 1].month, count: observed.length }
+})
 
 const assetCategoryById = computed(() => new Map(assets.value.map(a => [a.id, a.category_id])))
 
@@ -299,49 +324,65 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
     <div class="px-4 sm:px-6 py-6">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
         <div class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0" v-active-scroll>
-          <SelectButton v-model="range" :options="RANGES" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
+          <SelectButton :allow-empty="false" v-model="range" :options="RANGES" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-range-select" />
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <PlannedToggle />
+          <PlannedToggle :disabled="chartType === 'pie'" :description-id="chartType === 'pie' ? 'income-pie-help' : undefined" />
           <ChartTypeSelector :value="chartType" @change="setChartType" />
         </div>
       </div>
 
+      <p v-if="chartType === 'pie'" id="income-pie-help" class="mb-3 text-sm text-gray-600 dark:text-zinc-400">Pie shows income recorded for the current month. Choose a timeline chart to show future entries.</p>
+      <p v-else-if="data && !loading && actualRange" class="mb-3 text-sm text-gray-600 dark:text-zinc-400" role="status">
+        Selected period: {{ actualRange }} ·
+        <template v-if="!showPlanned">Future entries hidden.</template>
+        <template v-else-if="plannedTimeline">Future timeline: {{ plannedTimeline.start }} – {{ plannedTimeline.end }} · {{ plannedTimeline.count }} {{ plannedTimeline.count === 1 ? 'month' : 'months' }} with future entries.</template>
+        <template v-else>No future income entries for the selected sources.</template>
+      </p>
+
       <div v-if="persons.length > 0" class="wt-control-strip -mx-4 px-4 sm:mx-0 sm:px-0 mb-3" v-active-scroll>
-        <SelectButton v-model="personValue" :options="personOptions" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />
+        <SelectButton :allow-empty="false" v-model="personValue" :options="personOptions" option-label="label" option-value="value" class="whitespace-nowrap wt-touch-select wt-soft-select wt-person-select" />
       </div>
 
       <div v-if="error" class="mb-4">
         <Message severity="error" class="w-full">Could not load data.</Message>
         <div class="mt-2">
-          <Button label="Retry" link @click="retryCount++" />
+          <Button label="Retry" link :disabled="loading" @click="retryCount++" />
         </div>
+      </div>
+
+      <div v-if="referenceError" class="mb-4">
+        <Message severity="warn" class="w-full">Person filter and income drilldown unavailable: {{ referenceError }}</Message>
+        <Button label="Retry people and items" link :disabled="referenceLoading" @click="loadReferenceData" />
       </div>
 
       <!-- Summary cards -->
       <template v-if="data && !loading && !isEmpty">
+        <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Summary cards show income recorded in the selected period only.</p>
         <div
-          class="grid gap-3 mb-4"
+          class="grid grid-cols-1 gap-3 mb-4"
           :class="(person === null ? topSources.length > 0 : personSources.length > 0)
             ? 'lg:grid-cols-[minmax(20rem,36rem)_minmax(0,1fr)]'
             : 'sm:grid-cols-2 lg:max-w-xl'"
         >
           <div class="grid grid-cols-2 gap-3 self-start">
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
-              <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Total Income</p>
-              <p class="text-base font-bold text-green-600 dark:text-green-400 tabular-nums sm:text-lg">{{ eurFmt.format(totalInflow) }}</p>
+              <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Income in selected period</p>
+              <p class="text-base font-bold text-green-600 dark:text-green-400 tabular-nums sm:text-lg">{{ monthsWithData ? eurFmt.format(totalInflow) : '—' }}</p>
             </div>
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
-              <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Avg / Month</p>
-              <p class="text-base font-bold text-gray-900 dark:text-zinc-100 tabular-nums sm:text-lg">{{ eurFmt.format(avgMonthlyInflow) }}</p>
+              <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Average per recorded month</p>
+              <p class="text-base font-bold text-gray-900 dark:text-zinc-100 tabular-nums sm:text-lg">{{ monthsWithData ? eurFmt.format(avgMonthlyInflow) : '—' }}</p>
+              <p class="text-xs text-gray-500">{{ noSourcesSelected ? 'No sources selected' : `${monthsWithData} ${monthsWithData === 1 ? 'month' : 'months'} with income entries · ${missingMonths} ${missingMonths === 1 ? 'month' : 'months'} with no income entry` }}</p>
             </div>
           </div>
 
           <!-- "All" view: top 5 income sources, click-to-drill into a person -->
-          <div v-if="person === null && topSources.length > 0" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
+          <div v-if="person === null && topSources.length > 0" class="min-w-0 bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income by Person
             </p>
+            <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Amounts are recorded totals for the selected period; percentages are shares of net income.</p>
             <div class="flex flex-col gap-1.5">
               <button
                 v-for="row in topSources"
@@ -352,7 +393,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
                 @click="selectTopSource(row)"
               >
                 <span class="w-2.5 h-2.5 rounded-full flex-shrink-0" :style="{ backgroundColor: row.color }" />
-                <span class="flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate">{{ row.category_name }}</span>
+                <span class="min-w-0 flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate">{{ row.category_name }}</span>
                 <span class="text-sm font-semibold text-gray-900 dark:text-zinc-100 tabular-nums">{{ eurFmt.format(row.value) }}</span>
                 <span class="text-xs text-gray-400 dark:text-zinc-500 tabular-nums w-12 text-right">{{ row.pct_of_total.toFixed(1) }}%</span>
               </button>
@@ -360,10 +401,11 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
           </div>
 
           <!-- Per-person view: full source list, click to enable/disable each source -->
-          <div v-else-if="person !== null && personSources.length > 0" class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
+          <div v-else-if="person !== null && personSources.length > 0" class="min-w-0 bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-4 shadow-sm">
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income Sources
             </p>
+            <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Amounts are recorded totals for the selected period; percentages are shares of net income.</p>
             <div class="flex flex-col gap-1.5">
               <button
                 v-for="row in personSources"
@@ -381,15 +423,15 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
                   :class="row.disabled ? 'ring-1 ring-gray-400 dark:ring-zinc-500' : ''"
                 />
                 <span
-                  class="flex-1 text-sm text-gray-700 dark:text-zinc-300 truncate"
+                  class="min-w-0 flex-1 break-words text-sm text-gray-700 dark:text-zinc-300"
                   :class="row.disabled ? 'line-through' : ''"
                 >{{ row.category_name }}</span>
                 <span
                   class="text-sm font-semibold tabular-nums"
                   :class="row.disabled ? 'text-gray-400 dark:text-zinc-500 line-through' : 'text-gray-900 dark:text-zinc-100'"
-                >{{ eurFmt.format(row.value) }}</span>
-                <span class="text-xs text-gray-400 dark:text-zinc-500 tabular-nums w-12 text-right">
-                  {{ row.disabled ? '—' : `${row.pct_of_total.toFixed(1)}%` }}
+                >{{ row.hasRecordedIncome ? eurFmt.format(row.value) : '—' }}</span>
+                <span class="text-xs text-gray-400 dark:text-zinc-500 tabular-nums w-16 text-right">
+                  {{ !row.hasRecordedIncome ? 'Future only' : row.disabled ? '—' : `${row.pct_of_total.toFixed(1)}%` }}
                 </span>
               </button>
             </div>

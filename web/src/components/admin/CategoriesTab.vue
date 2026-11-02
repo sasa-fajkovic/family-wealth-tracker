@@ -98,7 +98,7 @@ async function handleConfirm() {
 async function handleReassignConfirm() {
   if (!deleteState.value || deleteState.value.phase !== 'reassign') return
   if (!deleteState.value.reassignTo) {
-    reassignError.value = 'Please select a category to move the assets to.'
+    reassignError.value = 'Please select a category to move the items to.'
     return
   }
   deleting.value = true
@@ -212,8 +212,8 @@ defineExpose({ openCreate })
           </span>
         </template>
       </Column>
-      <Column field="projected_yearly_growth" header="Growth Rate (%)" sortable>
-        <template #body="{ data: row }">{{ (row.projected_yearly_growth * 100).toFixed(2) }}%</template>
+      <Column field="projected_yearly_growth" header="Annual projection rate (%)" sortable>
+        <template #body="{ data: row }">{{ row.type === 'cash-inflow' ? 'Not used for income' : `${(row.projected_yearly_growth * 100).toFixed(2)}%` }}</template>
       </Column>
       <Column header="Color">
         <template #body="{ data: row }">
@@ -246,7 +246,7 @@ defineExpose({ openCreate })
       <template v-else-if="deleteState?.phase === 'reassign'">
         <div class="flex flex-col gap-3">
           <p class="text-sm text-gray-700 dark:text-zinc-300">
-            <strong>{{ deleteState.affectedAssets.length }}</strong> asset(s) are in this category.
+            <strong>{{ deleteState.affectedAssets.length }}</strong> item(s) are in this category.
             You must move them to another category:
           </p>
           <Select
