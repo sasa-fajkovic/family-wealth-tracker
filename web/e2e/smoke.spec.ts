@@ -387,11 +387,39 @@ test.describe('Projections page', () => {
   test('applying a custom horizon triggers a data reload', async ({ page }) => {
     await page.goto('/projections')
     await page.waitForLoadState('networkidle')
+    const reloaded = page.waitForResponse(response => response.url().includes('/projections?years=7&scenario=base') && response.ok())
     await page.getByLabel('Custom horizon in years').fill('7')
     await page.getByRole('button', { name: 'Apply custom horizon' }).click()
-    // After applying, page should still render without error
-    await page.waitForLoadState('networkidle')
+    const { projection } = await (await reloaded).json()
+    expect(projection.months).toHaveLength(84)
+    await expect(page.getByText('Target year', { exact: true }).locator('..')).toContainText(String(Number(projection.asOf.slice(0, 4)) + 7))
     await expect(page.getByLabel('Custom horizon in years')).toBeVisible()
+    await expect(page.getByRole('button', { name: '10Y', exact: true })).not.toHaveAttribute('aria-pressed', 'true')
+  })
+
+  test('custom horizons validate whole-year bounds and apply with Enter', async ({ page }) => {
+    await page.goto('/projections')
+    await page.waitForLoadState('networkidle')
+    const requestedYears: string[] = []
+    page.on('request', request => {
+      const url = new URL(request.url())
+      if (url.pathname === '/api/v1/projections') requestedYears.push(url.searchParams.get('years') ?? '')
+    })
+    const input = page.getByRole('spinbutton', { name: 'Custom horizon in years', exact: true })
+    for (const value of ['0', '31', '7.5', '']) {
+      await input.fill(value)
+      await page.getByRole('button', { name: 'Apply custom horizon', exact: true }).click()
+      await expect(page.getByRole('alert')).toHaveText('Enter a whole number from 1 to 30.')
+      await expect(page.getByRole('button', { name: '10Y', exact: true })).toHaveAttribute('aria-pressed', 'true')
+    }
+    expect(requestedYears).toEqual([])
+    const reloaded = page.waitForResponse(response => response.url().includes('/projections?years=2&scenario=base') && response.ok())
+    await input.fill('2')
+    await input.press('Enter')
+    const { projection } = await (await reloaded).json()
+    expect(projection.months).toHaveLength(24)
+    await expect(page.getByRole('alert')).toHaveCount(0)
+    await expect(page.getByText('Target year', { exact: true }).locator('..')).toContainText(String(Number(projection.asOf.slice(0, 4)) + 2))
   })
 
   test('sensitivity toggle for liabilities is present without income warning', async ({ page }) => {
@@ -447,9 +475,12 @@ test.describe('Projections page', () => {
     await expect(horizon).toHaveValue('5')
     await page.getByRole('button', { name: '30Y' }).click()
     await expect(horizon).toHaveValue('30')
+    const reloaded = page.waitForResponse(response => response.url().includes('/projections?years=12&scenario=base') && response.ok())
     await horizon.fill('12')
     await page.getByRole('button', { name: 'Apply custom horizon' }).click()
+    expect((await (await reloaded).json()).projection.months).toHaveLength(144)
     await expect(horizon).toHaveValue('12')
+    await expect(page.getByRole('button', { name: '30Y', exact: true })).not.toHaveAttribute('aria-pressed', 'true')
   })
 
   test('scenario API param: conservative scenario loads without error', async ({ request }) => {

@@ -21,12 +21,13 @@ const HORIZONS = [
   { label: '30Y', value: 30 },
 ]
 const horizon = ref(10)
-const customHorizonInput = ref('')
+const customHorizonInput = ref<string | number>('')
 const horizonError = ref('')
 
 function applyCustomHorizon() {
-  const n = parseInt(customHorizonInput.value, 10)
-  if (/^\d+$/.test(customHorizonInput.value.trim()) && n >= 1 && n <= 30) { horizon.value = n; horizonError.value = '' }
+  const raw = String(customHorizonInput.value).trim()
+  const n = parseInt(raw, 10)
+  if (/^\d+$/.test(raw) && n >= 1 && n <= 30) { horizon.value = n; horizonError.value = '' }
   else horizonError.value = 'Enter a whole number from 1 to 30.'
 }
 
