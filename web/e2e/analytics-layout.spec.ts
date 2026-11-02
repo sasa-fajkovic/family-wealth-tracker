@@ -91,15 +91,25 @@ test('analytics drilldown and advanced charts use available space at desktop and
   const firstCard = page.getByTestId('analytics-explore-grid').locator(':scope > div').first()
   await firstCard.getByRole('button', { name: /Current balance sizes/ }).click()
   await expect(firstCard.getByRole('button', { name: 'Close fullscreen' })).toBeVisible()
-  await expect.poll(() => firstCard.locator('canvas').evaluate(canvas => {
+  const fullscreenMatchesBitmap = () => firstCard.locator('canvas').evaluate(canvas => {
     const rect = canvas.getBoundingClientRect()
     const parent = canvas.parentElement!.getBoundingClientRect()
     return rect.width > 0 && rect.width <= parent.width + 1
       && Math.abs(canvas.width / window.devicePixelRatio - rect.width) <= 2
       && Math.abs(canvas.height / window.devicePixelRatio - rect.height) <= 2
-  })).toBe(true)
+  })
+  await expect.poll(fullscreenMatchesBitmap).toBe(true)
+  await expect.poll(() => firstCard.locator('canvas').evaluate(canvas => canvas.getBoundingClientRect().height)).toBeGreaterThan(700)
+  const fullscreenHeight = await firstCard.locator('canvas').evaluate(canvas => canvas.getBoundingClientRect().height)
+  await page.setViewportSize({ width: 1024, height: 700 })
+  await expect.poll(() => firstCard.locator('canvas').evaluate(canvas => canvas.getBoundingClientRect().height)).toBeLessThan(fullscreenHeight - 100)
+  await expect.poll(fullscreenMatchesBitmap).toBe(true)
   await firstCard.getByRole('button', { name: 'Close fullscreen' }).click()
   await expect(firstCard.getByRole('button', { name: 'Close fullscreen' })).toHaveCount(0)
+  await page.getByText('Explore more', { exact: true }).click()
+  await expect(firstCard.locator('canvas')).toBeHidden()
+  await page.getByText('Explore more', { exact: true }).click()
+  await expect.poll(fullscreenMatchesBitmap).toBe(true)
 })
 
 test('dashboard and analytics show period baseline from the summary contract', async ({ page }) => {
