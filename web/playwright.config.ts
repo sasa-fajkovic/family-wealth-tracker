@@ -24,7 +24,7 @@ export default defineConfig({
   ],
   // Start the production server with isolated local test data.
   webServer: target.startServer ? {
-    command: 'rm -rf .playwright-data && mkdir -p .playwright-data && npm run build && npm --prefix ../server run build && DATA_FILE=$PWD/.playwright-data/database.yaml DATA_POINTS_FILE=$PWD/.playwright-data/datapoints.csv LOGS_DIR=$PWD/.playwright-data/logs WEB_DIST=$PWD/dist PORT=4173 npm --prefix ../server run start',
+    command: 'rm -rf .playwright-data && mkdir -p .playwright-data && npm run build && npm --prefix ../server run build && DATA_FILE=$PWD/.playwright-data/database.yaml DATA_POINTS_FILE=$PWD/.playwright-data/datapoints.csv LOGS_DIR=$PWD/.playwright-data/logs WEB_DIST=$PWD/dist HOST=127.0.0.1 PORT=4173 npm --prefix ../server run start',
     port: 4173,
     reuseExistingServer: false,
     timeout: 120_000,

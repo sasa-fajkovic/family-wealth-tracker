@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Chart as ChartJS } from 'chart.js'
+import { resizeChart } from '../../utils/resizeChart'
 
 const props = defineProps<{
   title?: string
@@ -11,6 +13,36 @@ const props = defineProps<{
 }>()
 
 const expanded = ref(false)
+const container = ref<HTMLElement | null>(null)
+let resizeObserver: ResizeObserver | undefined
+let resizeFrame = 0
+let observedSize: { width: number; height: number } | null = null
+
+onMounted(() => {
+  if (!container.value) return
+  resizeObserver = new ResizeObserver(entries => {
+    const rect = entries[0]?.contentRect
+    if (!rect) return
+    const width = Math.round(rect.width)
+    const height = Math.round(rect.height)
+    if (width <= 0 || height <= 0) {
+      cancelAnimationFrame(resizeFrame)
+      observedSize = null
+      return
+    }
+    const previous = observedSize
+    observedSize = { width, height }
+    if (previous && previous.width === width && previous.height === height) return
+    cancelAnimationFrame(resizeFrame)
+    resizeFrame = requestAnimationFrame(() => {
+      container.value?.querySelectorAll('canvas').forEach(canvas => {
+        const chart = ChartJS.getChart(canvas)
+        if (canvas.isConnected && canvas.getClientRects().length > 0 && chart?.attached) resizeChart(chart)
+      })
+    })
+  })
+  resizeObserver.observe(container.value)
+})
 
 const containerClass = computed(() => {
   if (expanded.value) {
@@ -50,13 +82,15 @@ watch(expanded, async (v) => {
 })
 
 onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  cancelAnimationFrame(resizeFrame)
   document.body.style.overflow = ''
   window.removeEventListener('keydown', onKey)
 })
 </script>
 
 <template>
-  <div class="wt-chart-card" :class="containerClass">
+  <div ref="container" class="wt-chart-card" :class="containerClass">
     <div class="flex flex-wrap items-start justify-between gap-2 mb-2">
       <div class="min-w-[10rem] flex-1">
         <component
