@@ -35,8 +35,8 @@ test('dashboard links to missing entries for its person and current month', asyn
 test('projection rate sensitivity labels explain assumptions and retain API scenarios', async ({ page }) => {
   await page.goto('/projections')
   await expect(page.getByText(/Income is not invested; expenses, taxes and inflation are not included/)).toBeVisible()
-  await expect(page.getByText(/Values change evenly between known values and future entries within the selected horizon/)).toBeVisible()
-  await expect(page.getByText(/After the last future entry in the horizon, or when there are none, assumed annual rates compound/)).toBeVisible()
+  await expect(page.getByText(/Values change evenly between known values and future entries, including entries beyond the displayed horizon/)).toBeVisible()
+  await expect(page.getByText(/After the last future entry, or when there are none, assumed annual rates compound/)).toBeVisible()
   for (const [label, scenario] of [['0.5× rates', 'conservative'], ['1× rates', 'base'], ['1.5× rates', 'aggressive']] as const) {
     const response = page.waitForResponse(result => result.url().includes(`/projections?`) && result.url().includes(`scenario=${scenario}`))
     await page.getByRole('button', { name: label, exact: true }).click()

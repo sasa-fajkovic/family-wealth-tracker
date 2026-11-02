@@ -373,7 +373,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
             <div class="bg-white dark:bg-zinc-900 rounded-lg border border-gray-200 dark:border-zinc-700 p-3 shadow-sm">
               <p class="text-[11px] font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-1">Average per recorded month</p>
               <p class="text-base font-bold text-gray-900 dark:text-zinc-100 tabular-nums sm:text-lg">{{ monthsWithData ? eurFmt.format(avgMonthlyInflow) : '—' }}</p>
-              <p class="text-xs text-gray-500">{{ noSourcesSelected ? 'No sources selected' : `${monthsWithData} months with income entries · ${missingMonths} months with no income entry` }}</p>
+              <p class="text-xs text-gray-500">{{ noSourcesSelected ? 'No sources selected' : `${monthsWithData} ${monthsWithData === 1 ? 'month' : 'months'} with income entries · ${missingMonths} ${missingMonths === 1 ? 'month' : 'months'} with no income entry` }}</p>
             </div>
           </div>
 
@@ -382,6 +382,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income by Person
             </p>
+            <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Amounts are recorded totals for the selected period; percentages are shares of net income.</p>
             <div class="flex flex-col gap-1.5">
               <button
                 v-for="row in topSources"
@@ -404,7 +405,7 @@ function onChartPointClick(payload: { monthIndex: number; datasetIndex: number; 
             <p class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide mb-3">
               Income Sources
             </p>
-            <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Amounts below are recorded totals for the selected period.</p>
+            <p class="mb-3 text-xs text-gray-500 dark:text-zinc-400">Amounts are recorded totals for the selected period; percentages are shares of net income.</p>
             <div class="flex flex-col gap-1.5">
               <button
                 v-for="row in personSources"

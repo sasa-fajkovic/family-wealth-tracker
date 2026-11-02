@@ -56,7 +56,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div :class="containerClass">
+  <div class="wt-chart-card" :class="containerClass">
     <div class="flex flex-wrap items-start justify-between gap-2 mb-2">
       <div class="min-w-[10rem] flex-1">
         <component
@@ -99,6 +99,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.wt-chart-card :deep(canvas) {
+  max-width: 100%;
+}
+
 /* When expanded, force inner fixed-height chart wrappers to fill the screen. */
 .fixed :deep([class*="h-["]) {
   height: 100% !important;

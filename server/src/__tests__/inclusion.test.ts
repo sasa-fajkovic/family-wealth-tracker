@@ -243,3 +243,44 @@ for (const invalid of ['false', 0]) {
     assert.equal(await readFile(yamlPath, 'utf8'), invalidBytes)
   })
 }
+
+test('projection API preserves overlapping forecasts when plans and a closing zero exceed the shorter horizon', async () => {
+  const db = seed()
+  db.assets[0].projected_yearly_growth = 0.12
+  Object.assign(db.assets[1], { include_in_current_wealth: true, include_in_projections: true, closed_at: month(14) })
+  db.assets.push({ ...db.assets[0], id: 'later', name: 'Later', projected_yearly_growth: 0, include_in_current_wealth: false })
+  await reset(db, [
+    point('account-current', 'account', month(), 100), point('account-plan', 'account', month(14), 1500),
+    point('loan-current', 'loan', month(), -1400), point('loan-closing', 'loan', month(14), 0),
+    point('later-estimate', 'later', month(), 99999), point('later-plan', 'later', month(14), 2800),
+  ])
+  const before = [await readFile(yamlPath, 'utf8'), await readFile(csvPath, 'utf8')]
+  const results = []
+  for (const years of [1, 2, 5, 10]) {
+    results.push(await get<{ historical: SummaryResponse; projection: ProjectionBlock }>(`projections?years=${years}`))
+  }
+  const longest = results.at(-1)!.projection
+  for (const { historical, projection } of results) {
+    assert.equal(historical.current_total, -1300)
+    assert.deepEqual(projection.totals, longest.totals.slice(0, projection.months.length))
+    assert.deepEqual(projection.available, longest.available.slice(0, projection.months.length))
+    for (const series of projection.series) {
+      const reference = longest.series.find(value => value.category_id === series.category_id)!
+      assert.deepEqual(series.values, reference.values.slice(0, projection.months.length))
+      assert.deepEqual(series.available, reference.available.slice(0, projection.months.length))
+    }
+    assert.equal(projection.asset_metadata.find(asset => asset.asset_id === 'later')?.projection_start_month, month(14))
+  }
+  const stock = longest.series.find(series => series.category_id === 'stock')!
+  const debt = longest.series.find(series => series.category_id === 'debt')!
+  assert.equal(stock.values[0], 200)
+  assert.equal(stock.values[11], 1300)
+  assert.equal(stock.values[13], 4300)
+  assert.ok(Math.abs(stock.values[14] - (1500 * Math.pow(1.12, 1 / 12) + 2800)) < 0.000001)
+  assert.equal(debt.values[0], -1300)
+  assert.equal(debt.values[11], -200)
+  assert.equal(debt.values[13], 0)
+  assert.ok(debt.values.slice(14).every(value => value === 0))
+  assert.ok(debt.available.slice(14).every(value => !value))
+  assert.deepEqual([await readFile(yamlPath, 'utf8'), await readFile(csvPath, 'utf8')], before)
+})

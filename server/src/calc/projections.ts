@@ -189,20 +189,26 @@ export function buildProjection(
         : cat.type === 'asset'
           ? (x: number) => (finite(x) > 0 ? x : 0)
           : (x: number) => finite(x)
-      const plannedValues = months.map(m => planned.get(m)?.value)
-      const nextPlanned = (from: number) => plannedValues.findIndex((x, j) => j >= from && x !== undefined)
+      // Keep every future anchor, including those beyond the displayed horizon.
+      // The same projected month must use the same interpolation bounds at any horizon.
+      const [anchorYear, anchorMonth] = latestMonth.split('-').map(Number)
+      const plannedValues = [...planned.values()].map(point => {
+        const [year, month] = point.year_month.split('-').map(Number)
+        return { index: (year - anchorYear) * 12 + month - anchorMonth - 1, value: point.value }
+      }).sort((a, b) => a.index - b.index)
       let v = seed
       let prevI = assetDPs.length > 0 ? -1 : null
       let prevV = seed
-      let nextI = nextPlanned(0)
+      let nextPlan = 0
       for (let i = 0; i < months.length; i++) {
         if (!isActiveInMonth(asset, months[i])) continue
-        if (i === nextI) {
-          v = prevV = plannedValues[i]!
+        const next = plannedValues[nextPlan]
+        if (next && i === next.index) {
+          v = prevV = next.value
           prevI = i
-          nextI = nextPlanned(i + 1)
-        } else if (nextI !== -1 && prevI !== null) {
-          v = prevV + (plannedValues[nextI]! - prevV) * (i - prevI) / (nextI - prevI)
+          nextPlan++
+        } else if (next && prevI !== null) {
+          v = prevV + (next.value - prevV) * (i - prevI) / (next.index - prevI)
         } else {
           v = clamp(v * (1 + monthlyRate))
         }

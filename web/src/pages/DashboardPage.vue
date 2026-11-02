@@ -251,7 +251,7 @@ function formatSignedEur(v: number) {
         <span> · {{ data.monthly_coverage.carried }} using an earlier recorded value · {{ data.monthly_coverage.missing }} with no value available</span>
         <RouterLink v-if="data.monthly_coverage.observed < data.monthly_coverage.total" :to="{ path: '/monthly-update', query: { month: data.current_month ?? data.months[data.months.length - 1], ...(person ? { person } : {}), missing: '1' } }" class="ml-2 underline font-medium">Update missing entries</RouterLink>
         <span v-if="showPlanned"> · future entries shown in charts</span>
-        <span v-if="!inventoryLoading && !referenceError"> · Tracked: {{ inventoryCounts.asset }} assets, {{ inventoryCounts.liability }} liabilities, {{ inventoryCounts['cash-inflow'] }} income sources</span>
+        <span v-if="!inventoryLoading && !referenceError"> · Tracked: {{ inventoryCounts.asset }} {{ inventoryCounts.asset === 1 ? 'asset' : 'assets' }}, {{ inventoryCounts.liability }} {{ inventoryCounts.liability === 1 ? 'liability' : 'liabilities' }}, {{ inventoryCounts['cash-inflow'] }} income {{ inventoryCounts['cash-inflow'] === 1 ? 'source' : 'sources' }}</span>
       </div>
 
       <!-- Loading skeleton -->

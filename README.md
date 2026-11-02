@@ -216,6 +216,8 @@ assets:
   month. Planned balances are used exactly; intermediate months interpolate
   linearly between known balances. Compound growth resumes after the last plan.
   Future-only assets remain zero until their first planned month.
+  Future entries beyond the displayed horizon still define interpolation bounds,
+  so overlapping forecast months stay identical when the horizon changes.
 - `asset.projected_yearly_growth !== null` overrides the category default.
   `0` is a valid override; do not check with truthiness.
 

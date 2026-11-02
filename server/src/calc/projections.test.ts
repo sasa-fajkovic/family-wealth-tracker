@@ -298,6 +298,73 @@ describe('buildProjection planned values', () => {
   })
 })
 
+describe('projection horizon consistency', () => {
+  const asOf = '2024-06'
+  function acrossHorizons(asset: Asset, category: Category, points: DataPoint[]) {
+    const projections = [1, 2, 5, 10].map(years => buildProjection([asset], [category], points, years, 1, asOf))
+    const longest = projections.at(-1)!
+    for (const projection of projections) {
+      assert.deepEqual(projection.totals, longest.totals.slice(0, projection.months.length))
+      assert.deepEqual(projection.available, longest.available.slice(0, projection.months.length))
+    }
+    return longest
+  }
+
+  test('seeded assets use all planned anchors and resume their own growth after the final plan', () => {
+    const asset = makeAsset('a1', 'cat1', 0.12)
+    const projection = acrossHorizons(asset, makeCategory('cat1', 0.5), [
+      makeDP('a1', '2024-01', 100), // Stale balance is carried to asOf before interpolation.
+      makeDP('a1', '2025-08', 1500),
+      makeDP('a1', '2026-08', 2700),
+      makeDP('a1', '2029-08', 6300),
+    ])
+    assert.equal(projection.totals[0], 200)
+    assert.equal(projection.totals[11], 1300)
+    assert.equal(projection.totals[13], 1500)
+    assert.equal(projection.totals[14], 1600)
+    assert.equal(projection.totals[25], 2700)
+    assert.equal(projection.totals[61], 6300)
+    assert.ok(Math.abs(projection.totals[62] - 6300 * (1 + compoundMonthlyRate(0.12))) < 0.000001)
+    assert.ok(projection.available.every(Boolean))
+  })
+
+  test('a seeded liability interpolates to a closing zero beyond one year, then stops', () => {
+    const category: Category = { ...makeCategory('cat1', -0.1), type: 'liability' }
+    const asset = { ...makeAsset('a1'), closed_at: '2025-08' }
+    const projection = acrossHorizons(asset, category, [makeDP('a1', asOf, -1400), makeDP('a1', '2025-08', 0)])
+    assert.equal(projection.totals[0], -1300)
+    assert.equal(projection.totals[11], -200)
+    assert.equal(projection.totals[13], 0)
+    assert.ok(projection.totals.slice(14).every(value => value === 0))
+    assert.ok(projection.available.slice(0, 14).every(Boolean))
+    assert.ok(projection.available.slice(14).every(value => !value))
+  })
+
+  for (const projectionOnly of [false, true]) {
+    test(`${projectionOnly ? 'projection-only' : 'future-only'} assets wait for their first plan and use later anchors beyond shorter horizons`, () => {
+      const asset: Asset = { ...makeAsset('a1'), include_in_current_wealth: !projectionOnly }
+      const points = [makeDP('a1', '2025-08', 1500), makeDP('a1', '2026-08', 2700)]
+      if (projectionOnly) points.push(makeDP('a1', asOf, 99999))
+      const projection = acrossHorizons(asset, makeCategory('cat1', 0.12), points)
+      assert.ok(projection.totals.slice(0, 13).every(value => value === 0))
+      assert.ok(projection.available.slice(0, 13).every(value => !value))
+      assert.equal(projection.totals[13], 1500)
+      assert.equal(projection.available[13], true)
+      assert.equal(projection.totals[14], 1600)
+      assert.equal(projection.totals[25], 2700)
+      assert.ok(Math.abs(projection.totals[26] - 2700 * (1 + compoundMonthlyRate(0.12))) < 0.000001)
+    })
+  }
+
+  test('an anchor beyond even the longest displayed horizon still bounds seeded interpolation', () => {
+    const projection = acrossHorizons(makeAsset('a1'), makeCategory('cat1', 0.5), [
+      makeDP('a1', asOf, 100), makeDP('a1', '2035-08', 13500),
+    ])
+    assert.equal(projection.totals[0], 200)
+    assert.equal(projection.totals.at(-1), 12100)
+  })
+})
+
 describe('projection numeric and timestamp integrity', () => {
   test('rejects overflow while accumulating assets within a category', () => {
     const assets = [makeAsset('a1'), makeAsset('a2')]

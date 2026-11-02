@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test'
+import { randomUUID } from 'node:crypto'
 
 async function create(request: APIRequestContext, path: string, data: unknown) {
   const response = await request.post(`/api/v1/${path}`, { data })
@@ -7,7 +8,7 @@ async function create(request: APIRequestContext, path: string, data: unknown) {
 }
 
 test('analytics drilldown and advanced charts use available space at desktop and mobile widths', async ({ page, request }) => {
-  const suffix = Date.now()
+  const suffix = randomUUID()
   const people = []
   const categories = []
   for (let i = 0; i < 4; i++) people.push(await create(request, 'persons', { name: `Layout Person ${suffix} ${i}` }))
@@ -74,7 +75,31 @@ test('analytics drilldown and advanced charts use available space at desktop and
       expect(size.overflow).not.toBe('ellipsis')
     }
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+    // A CSS width limit alone can hide stale Chart.js bitmap dimensions and distort a chart.
+    await expect.poll(() => grid.locator('canvas').evaluateAll(canvases => canvases.flatMap(canvas => {
+      const rect = canvas.getBoundingClientRect()
+      const parent = canvas.parentElement?.getBoundingClientRect()
+      if (rect.width === 0 || (parent && rect.width <= parent.width + 1
+        && Math.abs(canvas.width / window.devicePixelRatio - rect.width) <= 2
+        && Math.abs(canvas.height / window.devicePixelRatio - rect.height) <= 2)) return []
+      return [{ title: canvas.closest('.wt-chart-card')?.textContent?.slice(0, 60), width: rect.width,
+        parentWidth: parent?.width, height: rect.height, bitmapWidth: canvas.width / window.devicePixelRatio,
+        bitmapHeight: canvas.height / window.devicePixelRatio }]
+    }))).toEqual([])
   }
+  await page.setViewportSize({ width: 1024, height: 900 })
+  const firstCard = page.getByTestId('analytics-explore-grid').locator(':scope > div').first()
+  await firstCard.getByRole('button', { name: /Current balance sizes/ }).click()
+  await expect(firstCard.getByRole('button', { name: 'Close fullscreen' })).toBeVisible()
+  await expect.poll(() => firstCard.locator('canvas').evaluate(canvas => {
+    const rect = canvas.getBoundingClientRect()
+    const parent = canvas.parentElement!.getBoundingClientRect()
+    return rect.width > 0 && rect.width <= parent.width + 1
+      && Math.abs(canvas.width / window.devicePixelRatio - rect.width) <= 2
+      && Math.abs(canvas.height / window.devicePixelRatio - rect.height) <= 2
+  })).toBe(true)
+  await firstCard.getByRole('button', { name: 'Close fullscreen' }).click()
+  await expect(firstCard.getByRole('button', { name: 'Close fullscreen' })).toHaveCount(0)
 })
 
 test('dashboard and analytics show period baseline from the summary contract', async ({ page }) => {

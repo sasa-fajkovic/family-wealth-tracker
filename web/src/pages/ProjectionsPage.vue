@@ -375,7 +375,7 @@ const categoryBreakdownGroups = computed(() => {
           </SelectButton>
         </div>
 
-        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">Forecast as of {{ data.projection.asOf }}. Values change evenly between known values and future entries within the selected horizon. After the last future entry in the horizon, or when there are none, assumed annual rates compound over time. Income is not invested; expenses, taxes and inflation are not included.</p>
+        <p v-if="data" class="text-sm text-gray-600 dark:text-zinc-400">Forecast as of {{ data.projection.asOf }}. Values change evenly between known values and future entries, including entries beyond the displayed horizon. After the last future entry, or when there are none, assumed annual rates compound over time. Income is not invested; expenses, taxes and inflation are not included.</p>
         <!-- Row 2: Scenario selector -->
         <div class="flex flex-col sm:flex-row sm:items-center gap-2">
           <span class="text-xs font-medium text-gray-500 dark:text-zinc-400 uppercase tracking-wide min-w-[70px]">Rate sensitivity</span>

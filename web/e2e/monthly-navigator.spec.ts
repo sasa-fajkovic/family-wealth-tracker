@@ -37,11 +37,26 @@ test('monthly navigation works by keyboard and retains the year on stay', async 
   const person = await create('persons', { name: `Navigator person ${suffix}` })
   const category = await create('categories', { name: `Navigator category ${suffix}`, type: 'asset', projected_yearly_growth: 0.05, color: '#6366f1' })
   const asset = await create('assets', { name: `Navigator asset ${suffix}`, person_id: person.id, category_id: category.id, projected_yearly_growth: null })
+  let releaseInitial = () => {}
+  let initialRequested = () => {}
+  const initialGate = new Promise<void>(resolve => { releaseInitial = resolve })
+  const initialReady = new Promise<void>(resolve => { initialRequested = resolve })
+  await page.route('**/api/v1/data-points?year_month=2026-05', async route => {
+    const response = await route.fetch()
+    initialRequested()
+    await initialGate
+    await route.fulfill({ response })
+  })
   await page.goto('/monthly-update?month=2026-05')
+  await initialReady
   const previous = page.getByRole('button', { name: 'Previous month' })
-  await previous.focus()
-  await expect(previous).toBeFocused()
-  await page.keyboard.press('Enter')
+  try {
+    await previous.focus()
+    await expect(previous).toBeFocused()
+    await page.keyboard.press('Enter')
+  } finally {
+    releaseInitial()
+  }
   await expect(page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name} in 2026-04`) }).last()).toBeVisible()
   await page.getByRole('button', { name: 'Next month' }).click()
   const value = page.getByRole('spinbutton', { name: new RegExp(`Value for ${asset.name} in 2026-05`) }).last()

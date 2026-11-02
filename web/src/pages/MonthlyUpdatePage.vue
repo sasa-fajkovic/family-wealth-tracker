@@ -287,7 +287,11 @@ async function initialize() {
       }
       queryApplied = true
     }
-    await loadMonthData()
+    let requestedMonth: string
+    do {
+      requestedMonth = selectedMonth.value
+      await loadMonthData()
+    } while (requestedMonth !== selectedMonth.value)
   } catch (e) {
     error.value = e instanceof ApiError ? e.message : 'Unexpected error loading data'
   } finally {
