@@ -70,7 +70,7 @@ async function _readYaml(): Promise<Database> {
     // this branch means the file was corrupted while we were running. Throw so
     // the request fails with a 500 and the audit log captures it; let the
     // operator decide whether to restart.
-    throw new Error(`Failed to parse database at ${DB_PATH}: ${(err as Error).message}`)
+    throw new Error(`Failed to parse database at ${DB_PATH}: ${(err as Error).message}`, { cause: err })
   }
 }
 
@@ -90,7 +90,7 @@ async function _readCsv(): Promise<DataPoint[]> {
   try {
     return decodeDataPoints(raw)
   } catch (err) {
-    throw new Error(`Failed to parse data points at ${CSV_PATH}: ${(err as Error).message}`)
+    throw new Error(`Failed to parse data points at ${CSV_PATH}: ${(err as Error).message}`, { cause: err })
   }
 }
 

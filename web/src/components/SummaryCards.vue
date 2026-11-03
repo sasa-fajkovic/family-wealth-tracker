@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { SummaryResponse } from '../types/index'
-import { ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { ChevronDown, ChevronUp } from '@lucide/vue'
 
 const props = defineProps<{
   data: SummaryResponse

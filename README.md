@@ -73,7 +73,7 @@ chown -R 1000:1000 /path/to/data
 
 ### Prerequisites
 
-- Node.js 24 recommended (supported: 20.19+ on Node 20, or 22.12+)
+- Node.js 24.15+ recommended (supported: Node 22.22.2+, Node 24.15+, or Node 26+)
 - npm
 
 ### Install dependencies
@@ -81,6 +81,10 @@ chown -R 1000:1000 /path/to/data
 ```bash
 make install
 ```
+
+TypeScript stays on 6.0 while [typescript-eslint requires TypeScript below 6.1](https://typescript-eslint.io/users/dependency-versions/).
+PrimeVue 4, PrimeIcons 7, and `@primeuix/themes` 2 retain their existing permissive licenses; review the PrimeUI license before upgrading their next major versions.
+Tailwind 4 needs a separate CSS migration to preserve the disabled preflight, `.p-dark` selector, and important utilities used by this UI.
 
 ### Start dev servers
 
