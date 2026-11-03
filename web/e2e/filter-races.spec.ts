@@ -7,6 +7,9 @@ for (const path of ['/', '/analytics', '/income']) {
       const category = await (await request.post('/api/v1/categories', { data: { name: `Race category ${Date.now()}`, type: 'cash-inflow', projected_yearly_growth: 0, color: '#14b8a6' } })).json()
       await request.post('/api/v1/assets', { data: { name: `Race asset ${Date.now()}`, person_id: person.id, category_id: category.id, projected_yearly_growth: null } })
     }
+    await page.goto(path)
+    const tableSummary = page.locator('summary').filter({ hasText: path === '/' ? 'wealth trends' : path === '/analytics' ? 'analytics timeline' : 'chart data' }).first()
+    await expect(tableSummary).toBeVisible()
     let release: (() => void) | undefined
     const gate = new Promise<void>(resolve => { release = resolve })
     let seen: (() => void) | undefined
@@ -19,7 +22,6 @@ for (const path of ['/', '/analytics', '/income']) {
       if (range === '6m') json.months[0] = '2222-01'
       await route.fulfill({ response, json })
     })
-    await page.goto(path)
     await page.getByRole('button', { name: '1Y', exact: true }).click()
     await started
     const latest = page.waitForResponse(response => response.url().includes('/summary?range=6m'))
@@ -28,7 +30,6 @@ for (const path of ['/', '/analytics', '/income']) {
     const earlier = page.waitForResponse(response => response.url().includes('/summary?range=1y'))
     release?.()
     await earlier
-    const tableSummary = page.locator('summary').filter({ hasText: path === '/' ? 'wealth trends' : path === '/analytics' ? 'analytics timeline' : 'chart data' }).first()
     await tableSummary.click()
     await expect(page.getByRole('rowheader', { name: '2222-01' }).first()).toBeVisible()
     await expect(page.getByRole('rowheader', { name: '1111-01' })).toHaveCount(0)
