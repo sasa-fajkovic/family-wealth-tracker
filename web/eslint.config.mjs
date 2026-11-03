@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import tseslint from 'typescript-eslint'
 import pluginVue from 'eslint-plugin-vue'
 import vueParser from 'vue-eslint-parser'
+import globals from 'globals'
 
 export default [
   { ignores: ['dist/**', 'node_modules/**', 'playwright-report/**', 'test-results/**'] },
@@ -9,8 +10,13 @@ export default [
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
   {
+    files: ['e2e-target.mjs'],
+    languageOptions: { globals: globals.node },
+  },
+  {
     files: ['**/*.vue'],
     languageOptions: {
+      globals: globals.browser,
       parser: vueParser,
       parserOptions: {
         parser: tseslint.parser,
