@@ -10,7 +10,7 @@ import SelectButton from 'primevue/selectbutton'
 import Skeleton from 'primevue/skeleton'
 import Message from 'primevue/message'
 import Button from 'primevue/button'
-import { AreaChart, LineChart, BarChart2, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { AreaChart, LineChart, BarChart2, ChevronDown, ChevronUp } from '@lucide/vue'
 import { useDataRefresh } from '../composables/useDataRefresh'
 
 // ── Horizon ───────────────────────────────────────────────────────────────────

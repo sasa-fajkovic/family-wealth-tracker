@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AreaChart, LineChart, BarChart2, PieChart } from 'lucide-vue-next'
+import { AreaChart, LineChart, BarChart2, PieChart } from '@lucide/vue'
 import SelectButton from 'primevue/selectbutton'
 import type { ChartType } from '../composables/useChartType'
 

@@ -72,7 +72,7 @@ export async function bootstrapDatabase(): Promise<void> {
   try {
     parse(raw)
   } catch (err) {
-    throw new Error(`Failed to parse database at ${DB_PATH}: ${(err as Error).message}`)
+    throw new Error(`Failed to parse database at ${DB_PATH}: ${(err as Error).message}`, { cause: err })
   }
 
   const current = parse(raw) as LegacyDatabase
