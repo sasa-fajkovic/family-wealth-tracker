@@ -1,6 +1,8 @@
 IMAGE   ?= wealthtrack
 TAG     ?= latest
 PORT    ?= 8080
+MEMORY  ?= 512m
+MEMORY_SWAP ?= 1024m
 DATA    ?= $(dir $(PWD))family-wealth-tracker-data
 
 .PHONY: install dev build docker-build docker-run docker-stop clean
@@ -32,6 +34,7 @@ docker-run:
 	mkdir -p $(DATA)
 	docker run -d \
 		--name $(IMAGE) \
+		--memory=$(MEMORY) --memory-swap=$(MEMORY_SWAP) \
 		-p $(PORT):8080 \
 		-v $(DATA):/data \
 		$(IMAGE):$(TAG)
