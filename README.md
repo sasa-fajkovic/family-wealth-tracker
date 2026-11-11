@@ -31,6 +31,7 @@ A self-hosted family net worth tracker with dead-simple data entry and beautiful
 # Pull and run
 docker run -d \
   --name wealthtrack \
+  --memory=512m --memory-swap=1024m \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
   ghcr.io/sasa-fajkovic/family-wealth-tracker:latest
@@ -46,6 +47,8 @@ Or with Docker Compose:
 services:
   wealthtrack:
     image: ghcr.io/sasa-fajkovic/family-wealth-tracker:latest
+    mem_limit: 512m
+    memswap_limit: 1024m
     ports:
       - "8080:8080"
     volumes:
@@ -58,6 +61,12 @@ docker compose up -d
 ```
 
 Data is persisted in `./data/` on the host (created automatically on first run).
+
+Docker examples and `make docker-run` cap RAM at 512 MiB. The combined RAM-plus-swap
+budget is 1 GiB on hosts with swap-controller support; without it only the RAM cap
+is enforced. For larger workloads, override both with
+`make docker-run MEMORY=1g MEMORY_SWAP=2g` or adjust the Compose values. Keep the same
+limits when recreating a container during a release or rollback.
 
 ### Permissions
 
